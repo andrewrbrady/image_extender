@@ -1,0 +1,4 @@
+set(__QT_DEPLOY_TARGET_extend_canvas_FILE /Users/andrewbrady/Development/arb_cli_tools/image_extender/extend_canvas_ui/build/libextend_canvas.a)
+set(__QT_DEPLOY_TARGET_extend_canvas_TYPE STATIC_LIBRARY)
+set(__QT_DEPLOY_TARGET_extend_canvas_ui_FILE /Users/andrewbrady/Development/arb_cli_tools/image_extender/extend_canvas_ui/build/extend_canvas_ui.app/Contents/MacOS/extend_canvas_ui)
+set(__QT_DEPLOY_TARGET_extend_canvas_ui_TYPE EXECUTABLE)

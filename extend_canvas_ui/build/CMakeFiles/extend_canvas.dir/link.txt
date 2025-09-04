@@ -1,0 +1,2 @@
+/usr/bin/ar qc libextend_canvas.a CMakeFiles/extend_canvas.dir/extend_canvas_autogen/mocs_compilation.cpp.o CMakeFiles/extend_canvas.dir/src/extend_canvas.cpp.o
+/usr/bin/ranlib libextend_canvas.a
