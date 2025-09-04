@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: Build wx app
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: startsWith(runner.os, 'Linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopencv-dev libwxgtk3.2-dev build-essential cmake
+
+      - name: Install dependencies (macOS)
+        if: startsWith(runner.os, 'macOS')
+        run: |
+          brew update
+          brew install opencv wxwidgets cmake
+
+      - name: Configure
+        working-directory: extend_canvas_wx
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: extend_canvas_wx
+        run: cmake --build build --config Release --parallel
+

@@ -44,14 +44,15 @@ set(HDR
 add_executable(${PROJECT_NAME} MACOSX_BUNDLE
     ${SRC}
     ${HDR}
-    # Reuse the shared extend_canvas implementation
-    ../extend_canvas_ui/src/extend_canvas.cpp
-    ../extend_canvas_ui/src/extend_canvas.hpp
+    # Reuse the shared extend_canvas implementation (moved to shared/)
+    ../shared/extend_canvas/extend_canvas.cpp
+    ../shared/extend_canvas/extend_canvas.hpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extend_canvas_ui/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/extend_canvas
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
