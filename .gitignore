@@ -1,0 +1,56 @@
+# OS-specific
+.DS_Store
+Thumbs.db
+._*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# CMake build trees
+build/
+*/build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+Testing/
+
+# Qt/wx auto-generated (if any)
+*_autogen/
+*.qrc.depends
+
+# Compiled objects and libs
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app/
+
+# Binaries and temp
+/extend_canvas
+/matte_generator
+*.log
+*.tmp
+*.swp
+*.swo
+
+# C/C++ tooling
+*.dSYM/
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+
