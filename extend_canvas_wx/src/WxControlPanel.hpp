@@ -53,6 +53,8 @@ private:
     wxSpinCtrl* whiteThr_ {nullptr};
     wxSpinCtrlDouble* padding_ {nullptr};
     wxSpinCtrl* blurRadius_ {nullptr};
+    wxStaticText* whiteThrLabel_ {nullptr};
+    wxStaticText* paddingLabel_ {nullptr};
     wxComboBox* scaleBox_ {nullptr};
     wxButton* processBtn_ {nullptr};
 
@@ -79,6 +81,11 @@ private:
     std::map<wxString, ImageSettings> perImageSettings_;
 
     friend class WxFileDropTarget;
+
+public:
+    // Crop helpers
+    // Returns width/height ratio derived from canvas dims; 0.0 if not set
+    double getCropAspectRatio() const;
 };
 
 class WxFileDropTarget : public wxFileDropTarget

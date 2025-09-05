@@ -45,6 +45,7 @@ void WxControlPanel::BuildUI()
     modeBox_ = new wxComboBox(this, wxID_ANY);
     modeBox_->Append("Extend Canvas");
     modeBox_->Append("Vehicle Mask (SAM2)");
+    modeBox_->Append("Crop");
     modeBox_->SetSelection(0);
     modeRow->Add(modeBox_, 1);
     modeBox->Add(modeRow, 0, wxALL | wxEXPAND, 6);
@@ -79,9 +80,15 @@ void WxControlPanel::BuildUI()
         b->Bind(wxEVT_BUTTON, [this, w, h](wxCommandEvent&){ width_->SetValue(w); height_->SetValue(h); wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev);} );
         presetsRow->Add(b, 0, wxRIGHT, 6);
     };
-    addPreset("1080×1350", 1080, 1350);
-    addPreset("1080×1920", 1080, 1920);
-    addPreset("1080×1080", 1080, 1080);
+    // Common 1080-based presets
+    addPreset("1080×1920 (9:16)", 1080, 1920);
+    addPreset("1080×1350 (4:5)", 1080, 1350);
+    addPreset("1080×1440 (3:4)", 1080, 1440);
+    addPreset("1080×1620 (2:3)", 1080, 1620);
+    addPreset("1080×1080 (1:1)", 1080, 1080);
+    addPreset("1080×810 (4:3)", 1080, 810);
+    addPreset("1080×720 (3:2)", 1080, 720);
+    addPreset("1080×608 (16:9)", 1080, 608);
     dimsBox->Add(presetsRow, 0, wxALL, 6);
 
     auto* dimsRow = new wxBoxSizer(wxHORIZONTAL);
@@ -97,10 +104,12 @@ void WxControlPanel::BuildUI()
     // Section: Processing params
     auto* paramsBox = new wxStaticBoxSizer(wxVERTICAL, this, "Processing Parameters");
     auto* paramsRow = new wxBoxSizer(wxHORIZONTAL);
-    paramsRow->Add(new wxStaticText(this, wxID_ANY, "White Threshold:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    whiteThrLabel_ = new wxStaticText(this, wxID_ANY, "White Threshold:");
+    paramsRow->Add(whiteThrLabel_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     whiteThr_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80, -1), wxSP_ARROW_KEYS, -1, 255, 20);
     paramsRow->Add(whiteThr_, 0, wxRIGHT, 12);
-    paramsRow->Add(new wxStaticText(this, wxID_ANY, "Padding %:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    paddingLabel_ = new wxStaticText(this, wxID_ANY, "Padding %:");
+    paramsRow->Add(paddingLabel_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     padding_ = new wxSpinCtrlDouble(this, wxID_ANY);
     padding_->SetRange(0.0, 1.0);
     padding_->SetIncrement(0.01);
@@ -112,6 +121,8 @@ void WxControlPanel::BuildUI()
     blurRadius_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80, -1), wxSP_ARROW_KEYS, 0, 50, 0);
     paramsRow->Add(blurRadius_, 0, wxRIGHT, 12);
     paramsBox->Add(paramsRow, 0, wxALL, 6);
+
+    // Crop settings: aspect is implicitly derived from canvas Width/Height
 
     auto* scaleRow = new wxBoxSizer(wxHORIZONTAL);
     scaleBox_ = new wxComboBox(this, wxID_ANY);
@@ -242,8 +253,14 @@ void WxControlPanel::WireEvents()
     invertMask_->Bind(wxEVT_CHECKBOX, fireMaskChanged);
     modeBox_->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&){
         EnsureDefaultOutputFolder();
-        const bool show = (getMode() == ProcessingMode::VehicleMask);
-        if (maskBox_) maskBox_->ShowItems(show);
+        const bool showMask = (getMode() == ProcessingMode::VehicleMask);
+        if (maskBox_) maskBox_->ShowItems(showMask);
+        const bool isCrop = (getMode() == ProcessingMode::Crop);
+        // Hide white threshold and padding in Crop mode
+        if (whiteThrLabel_) whiteThrLabel_->Show(!isCrop);
+        if (whiteThr_) whiteThr_->Show(!isCrop);
+        if (paddingLabel_) paddingLabel_->Show(!isCrop);
+        if (padding_) padding_->Show(!isCrop);
         Layout();
         wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED);
         wxPostEvent(this, ev);
@@ -251,6 +268,12 @@ void WxControlPanel::WireEvents()
 
     // Initial visibility per mode (hide/show all items in the sizer)
     if (maskBox_) maskBox_->ShowItems(getMode() == ProcessingMode::VehicleMask);
+    // Initial visibility: hide threshold/padding if starting in Crop (default is Extend)
+    const bool startIsCrop = (getMode() == ProcessingMode::Crop);
+    if (whiteThrLabel_) whiteThrLabel_->Show(!startIsCrop);
+    if (whiteThr_) whiteThr_->Show(!startIsCrop);
+    if (paddingLabel_) paddingLabel_->Show(!startIsCrop);
+    if (padding_) padding_->Show(!startIsCrop);
 
     processBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_PROCESS_REQUESTED); wxPostEvent(this, ev); });
 
@@ -344,7 +367,11 @@ int WxControlPanel::getScaleFactor() const
 
 wxString WxControlPanel::getOutputFolder() const
 {
-    return outputFolder_->GetValue();
+    wxString p = outputFolder_->GetValue();
+    p.Replace("\n", "");
+    p.Replace("\r", "");
+    p.Trim(true).Trim(false);
+    return p;
 }
 
 wxArrayString WxControlPanel::getBatchFiles() const
@@ -355,7 +382,9 @@ wxArrayString WxControlPanel::getBatchFiles() const
 ProcessingMode WxControlPanel::getMode() const
 {
     int sel = modeBox_ ? modeBox_->GetSelection() : 0;
-    return (sel == 1) ? ProcessingMode::VehicleMask : ProcessingMode::ExtendCanvas;
+    if (sel == 1) return ProcessingMode::VehicleMask;
+    if (sel == 2) return ProcessingMode::Crop;
+    return ProcessingMode::ExtendCanvas;
 }
 
 MaskSettings WxControlPanel::getMaskSettings() const
@@ -372,4 +401,12 @@ MaskSettings WxControlPanel::getMaskSettings() const
     m.featherRadius = featherRadiusMask_->GetValue();
     m.invert = invertMask_->GetValue();
     return m;
+}
+
+double WxControlPanel::getCropAspectRatio() const
+{
+    int w = width_ ? width_->GetValue() : 0;
+    int h = height_ ? height_->GetValue() : 0;
+    if (w <= 0 || h <= 0) return 0.0;
+    return double(w) / double(h);
 }

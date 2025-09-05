@@ -4,6 +4,7 @@
 #include <wx/image.h>
 #include <wx/statline.h>
 #include <wx/dcclient.h>
+#include <wx/dcbuffer.h>
 #include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <cstring>
@@ -33,9 +34,10 @@ void WxPreviewPanel::BuildUI()
     auto* origPanel = new wxPanel(content);
     auto* oSizer = new wxBoxSizer(wxVERTICAL);
     originalTitle_ = new wxStaticText(origPanel, wxID_ANY, "Original");
-    originalBmp_ = new wxStaticBitmap(origPanel, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxSize(400, 400));
+    originalCanvas_ = new CropCanvas(this);
+    originalCanvas_->SetMinSize(wxSize(400, 400));
     oSizer->Add(originalTitle_, 0, wxALL, 4);
-    oSizer->Add(originalBmp_, 1, wxEXPAND | wxALL, 4);
+    oSizer->Add(originalCanvas_, 1, wxEXPAND | wxALL, 4);
     origPanel->SetSizer(oSizer);
 
     // Result
@@ -68,16 +70,20 @@ void WxPreviewPanel::BuildUI()
 
 void WxPreviewPanel::LayoutImages()
 {
-    // Scale bitmaps to fit height of visible area roughly
-    int availH = scroll_->GetClientSize().y - 60;
-    if (availH < 100) availH = 100;
-    auto scaleMatToH = [&](const cv::Mat& bgr){
+    // Fit images within each column's visible width and overall height
+    wxSize client = scroll_->GetClientSize();
+    int gutters = 60; // approximate padding + gaps
+    int availWPerPanel = std::max(120, (client.x - gutters) / 2);
+    int availH = std::max(120, client.y - 60);
+
+    auto scaleMatToFit = [&](const cv::Mat& bgr){
         if (bgr.empty()) return wxBitmap();
-        double scale = double(availH) / bgr.rows;
-        int nw = std::max(1, int(bgr.cols * scale));
-        int nh = std::max(1, int(bgr.rows * scale));
+        double sx = double(availWPerPanel) / std::max(1, bgr.cols);
+        double sy = double(availH) / std::max(1, bgr.rows);
+        double s = std::min(sx, sy);
+        int nw = std::max(1, int(bgr.cols * s));
+        int nh = std::max(1, int(bgr.rows * s));
         cv::Mat resized; cv::resize(bgr, resized, cv::Size(nw, nh), 0, 0, cv::INTER_LANCZOS4);
-        // BGR->RGB and deep copy to wx
         cv::Mat rgb; cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
         size_t size = static_cast<size_t>(rgb.cols) * static_cast<size_t>(rgb.rows) * 3;
         unsigned char* buf = new unsigned char[size];
@@ -86,10 +92,29 @@ void WxPreviewPanel::LayoutImages()
         return wxBitmap(wi);
     };
 
-    if (originalMat_) originalBmp_->SetBitmap(scaleMatToH(*originalMat_));
-    else if (originalCache_.IsOk()) originalBmp_->SetBitmap(originalCache_);
-    if (resultMat_) resultBmp_->SetBitmap(scaleMatToH(*resultMat_));
-    else if (resultCache_.IsOk()) resultBmp_->SetBitmap(resultCache_);
+    if (originalMat_) {
+        wxBitmap bm = scaleMatToFit(*originalMat_);
+        originalCanvas_->SetImage(bm, wxSize(originalMat_->cols, originalMat_->rows));
+    } else if (originalCache_.IsOk()) {
+        // Cache already in wxBitmap form; but we still want to ensure it fits the panel width/height
+        // Convert cache back to Mat-like scaling via wxImage to keep path uniform
+        wxImage img = originalCache_.ConvertToImage();
+        cv::Mat bgr(img.GetHeight(), img.GetWidth(), CV_8UC3, img.GetData());
+        // wxImage stores RGB; convert to BGR view without copying (safe enough for sizing)
+        cv::Mat bgrCopy; cv::cvtColor(bgr, bgrCopy, cv::COLOR_RGB2BGR);
+        wxBitmap bm = scaleMatToFit(bgrCopy);
+        originalCanvas_->SetImage(bm, wxSize(originalCache_.GetWidth(), originalCache_.GetHeight()));
+    }
+
+    if (resultMat_) {
+        resultBmp_->SetBitmap(scaleMatToFit(*resultMat_));
+    } else if (resultCache_.IsOk()) {
+        // Keep cached bitmap, but if it's oversized it will still be displayed; re-scaling ensures fit
+        wxImage img = resultCache_.ConvertToImage();
+        cv::Mat bgr(img.GetHeight(), img.GetWidth(), CV_8UC3, img.GetData());
+        cv::Mat bgrCopy; cv::cvtColor(bgr, bgrCopy, cv::COLOR_RGB2BGR);
+        resultBmp_->SetBitmap(scaleMatToFit(bgrCopy));
+    }
 
     // Position overlay to cover full panel
     overlay_->SetSize(GetClientSize());
@@ -130,6 +155,7 @@ void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSetting
     originalMat_ = new cv::Mat(img.clone());
     originalCache_ = toWxBitmap(img);
     originalTitle_->SetLabel("Original (" + wxString::Format("%dx%d", originalCache_.GetWidth(), originalCache_.GetHeight()) + ")");
+    if (originalCanvas_) originalCanvas_->EnableOverlay(mode == ProcessingMode::Crop);
 
     // If in Vehicle Mask mode, build a mask preview using provided settings and return
     if (mode == ProcessingMode::VehicleMask)
@@ -197,6 +223,65 @@ void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSetting
         Mat right = img(Rect(seamX, 0, overlap, img.rows)).clone();
         for (int i=0;i<overlap;++i){ double a = (i+1.0)/(overlap+1.0); Mat dst = img(Rect(seamX - overlap + i, 0, 1, img.rows)); addWeighted(right.col(i), a, left.col(i), 1.0 - a, 0.0, dst); }
     };
+
+    if (mode == ProcessingMode::Crop)
+    {
+        // Initialize crop rect if missing for this image
+        if (!cropByImage_.count(imagePath))
+        {
+            // Default to centered rect covering 80% of the shorter side, honoring aspect if set
+            int W = img.cols, H = img.rows;
+            int cw = int(W * 0.8 + 0.5);
+            int ch = int(H * 0.8 + 0.5);
+            if (cropAspect_ > 0.0)
+            {
+                double want = cropAspect_;
+                // Adjust width/height to match aspect while fitting inside image
+                if (double(cw)/double(ch) > want) { cw = int(ch * want + 0.5); } else { ch = int(cw / want + 0.5); }
+            }
+            if (cw > W) cw = W; if (ch > H) ch = H;
+            int cx = (W - cw)/2; int cy = (H - ch)/2;
+            cropByImage_[imagePath] = wxRect(cx, cy, cw, ch);
+        }
+        // Update canvas
+        originalCanvas_->EnableOverlay(true);
+        originalCanvas_->SetAspectRatio(cropAspect_);
+        originalCanvas_->SetCropRectImage(cropByImage_[imagePath]);
+
+        // Build cropped result and optionally scale to requested output size
+        wxRect cr = cropByImage_[imagePath];
+        cv::Rect roi(cr.x, cr.y, cr.width, cr.height);
+        roi &= cv::Rect(0,0,img.cols, img.rows);
+        cv::Mat cropped = img(roi).clone();
+        auto applyFinalResize = [](const cv::Mat& canvas, int reqW, int reqH){
+            if (reqW <= 0 || reqH <= 0) return canvas.clone();
+            double sx = double(reqW)/canvas.cols, sy = double(reqH)/canvas.rows; double s = std::min(sx, sy);
+            int nw = std::max(1, int(canvas.cols * s + 0.5)); int nh = std::max(1, int(canvas.rows * s + 0.5));
+            cv::Mat resized; cv::resize(canvas, resized, cv::Size(nw, nh), 0,0, cv::INTER_LANCZOS4);
+            cv::Mat final(reqH, reqW, canvas.type(), cv::Scalar(255,255,255));
+            int x = (reqW - nw)/2; int y = (reqH - nh)/2; resized.copyTo(final(cv::Rect(x,y,nw,nh))); return final;
+        };
+        int desiredW = settings.width > 0 ? settings.width : cropped.cols;
+        int desiredH = settings.height > 0 ? settings.height : cropped.rows;
+        cv::Mat result = applyFinalResize(cropped, desiredW, desiredH);
+
+        // Convert to wxBitmap (deep copy) and store full-res mat
+        if (resultMat_) { delete resultMat_; resultMat_ = nullptr; }
+        resultMat_ = new cv::Mat(result.clone());
+        auto toWxBitmap = [](const cv::Mat& bgr){
+            cv::Mat rgb; cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+            const size_t size = static_cast<size_t>(rgb.cols) * static_cast<size_t>(rgb.rows) * 3;
+            unsigned char* buf = new unsigned char[size];
+            std::memcpy(buf, rgb.data, size);
+            wxImage wi(rgb.cols, rgb.rows, buf, false);
+            return wxBitmap(wi);
+        };
+        resultCache_ = toWxBitmap(result);
+        resultTitle_->SetLabel("Crop Preview (" + wxString::Format("%dx%d", resultCache_.GetWidth(), resultCache_.GetHeight()) + ")");
+        LayoutImages();
+        ShowOverlay(wxString::FromUTF8("Preview"), wxColour(100, 100, 100), 400);
+        return;
+    }
 
     int thr = (settings.whiteThreshold >= 0 && settings.whiteThreshold <= 255)
               ? settings.whiteThreshold : centerSampleThreshold(img);
@@ -329,7 +414,7 @@ void WxPreviewPanel::ClearPreview()
     currentImagePath_.clear();
     originalCache_ = wxBitmap();
     resultCache_ = wxBitmap();
-    originalBmp_->SetBitmap(wxNullBitmap);
+    if (originalCanvas_) originalCanvas_->SetImage(wxNullBitmap, wxSize(0,0));
     resultBmp_->SetBitmap(wxNullBitmap);
     originalTitle_->SetLabel("Original");
     resultTitle_->SetLabel("Result");
@@ -350,4 +435,337 @@ void WxPreviewPanel::ShowOverlay(const wxString& text, const wxColour& color, in
     overlay_->CentreOnParent();
     overlay_->Show();
     overlayHideTimer_.StartOnce(durationMs);
+}
+
+void WxPreviewPanel::SetCropAspectRatio(double aspectWOverH)
+{
+    cropAspect_ = aspectWOverH;
+    if (!currentImagePath_.IsEmpty() && cropByImage_.count(currentImagePath_) && originalMat_ && !originalMat_->empty())
+    {
+        // Adjust current rect to maintain center while applying aspect
+        wxRect r = cropByImage_[currentImagePath_];
+        if (cropAspect_ > 0.0)
+        {
+            int cx = r.GetX() + r.GetWidth()/2;
+            int cy = r.GetY() + r.GetHeight()/2;
+            int w = r.GetWidth(); int h = r.GetHeight();
+            double want = cropAspect_;
+            if (double(w)/double(h) > want) { w = int(h * want + 0.5); } else { h = int(w / want + 0.5); }
+            int imgW = originalMat_->cols, imgH = originalMat_->rows;
+            w = std::max(4, std::min(w, imgW));
+            h = std::max(4, std::min(h, imgH));
+            int x = std::max(0, cx - w/2); int y = std::max(0, cy - h/2);
+            if (x + w > imgW) x = imgW - w;
+            if (y + h > imgH) y = imgH - h;
+            cropByImage_[currentImagePath_] = wxRect(x,y,w,h);
+        }
+        if (originalCanvas_) { originalCanvas_->SetAspectRatio(cropAspect_); originalCanvas_->SetCropRectImage(cropByImage_[currentImagePath_]); }
+    }
+}
+
+bool WxPreviewPanel::GetCropRect(const wxString& imagePath, wxRect& out) const
+{
+    auto it = cropByImage_.find(imagePath);
+    if (it == cropByImage_.end()) return false;
+    out = it->second; return true;
+}
+
+void WxPreviewPanel::SetCropRect(const wxString& imagePath, const wxRect& rect)
+{
+    cropByImage_[imagePath] = rect;
+}
+
+// ===== CropCanvas implementation =====
+
+wxBEGIN_EVENT_TABLE(CropCanvas, wxPanel)
+    EVT_PAINT(CropCanvas::OnPaint)
+    EVT_LEFT_DOWN(CropCanvas::OnLeftDown)
+    EVT_LEFT_UP(CropCanvas::OnLeftUp)
+    EVT_MOTION(CropCanvas::OnMotion)
+    EVT_LEAVE_WINDOW(CropCanvas::OnLeave)
+    EVT_SIZE(CropCanvas::OnSize)
+wxEND_EVENT_TABLE()
+
+CropCanvas::CropCanvas(WxPreviewPanel* owner) : wxPanel(owner), owner_(owner)
+{
+    SetBackgroundStyle(wxBG_STYLE_PAINT);
+    SetCursor(wxCURSOR_ARROW);
+}
+
+void CropCanvas::SetImage(const wxBitmap& bmp, const wxSize& origPixelSize)
+{
+    bmp_ = bmp;
+    origImgSize_ = origPixelSize;
+    Refresh();
+}
+
+void CropCanvas::EnableOverlay(bool enable)
+{
+    overlayEnabled_ = enable;
+    Refresh();
+}
+
+void CropCanvas::SetCropRectImage(const wxRect& r)
+{
+    cropImg_ = r;
+    Refresh();
+}
+
+wxRect CropCanvas::GetCropRectImage() const { return cropImg_; }
+
+void CropCanvas::SetAspectRatio(double aspectWOverH)
+{
+    aspect_ = aspectWOverH;
+}
+
+void CropCanvas::OnPaint(wxPaintEvent&)
+{
+    wxAutoBufferedPaintDC dc(this);
+    dc.Clear();
+    if (!bmp_.IsOk()) return;
+    // Draw image centered
+    wxPoint origin = ImageOriginOnPanel();
+    dc.DrawBitmap(bmp_, origin);
+    if (overlayEnabled_ && cropImg_.GetWidth() > 0 && cropImg_.GetHeight() > 0)
+    {
+        wxRect pr = ImageToPanel(cropImg_);
+        // Dim outside
+        wxRect client(wxPoint(0,0), GetClientSize());
+        wxBrush dimBrush(wxColour(0,0,0,80));
+        dc.SetBrush(dimBrush);
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        // Four rects around crop
+        dc.DrawRectangle(0,0, client.width, pr.y);
+        dc.DrawRectangle(0, pr.y, pr.x, pr.height);
+        dc.DrawRectangle(pr.x + pr.width, pr.y, client.width - (pr.x + pr.width), pr.height);
+        dc.DrawRectangle(0, pr.y + pr.height, client.width, client.height - (pr.y + pr.height));
+
+        // Draw crop rect border
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.SetPen(wxPen(wxColour(0, 200, 80), 2));
+        dc.DrawRectangle(pr);
+
+        // Draw handles (larger for easier selection)
+        const int hs = 12;
+        auto drawHandle = [&](int x, int y){ dc.SetBrush(wxBrush(wxColour(255,255,255))); dc.SetPen(wxPen(wxColour(0,0,0))); dc.DrawRectangle(x - hs/2, y - hs/2, hs, hs); };
+        drawHandle(pr.x, pr.y);
+        drawHandle(pr.x + pr.width, pr.y);
+        drawHandle(pr.x, pr.y + pr.height);
+        drawHandle(pr.x + pr.width, pr.y + pr.height);
+    }
+}
+
+void CropCanvas::OnLeftDown(wxMouseEvent& e)
+{
+    if (!overlayEnabled_) return;
+    SetFocus();
+    if (!HasCapture()) CaptureMouse();
+    lastMouse_ = e.GetPosition();
+    drag_ = HitTest(lastMouse_);
+    if (drag_ == None && ImageToPanel(cropImg_).Contains(lastMouse_)) drag_ = Move;
+    e.Skip(false);
+}
+
+void CropCanvas::OnLeftUp(wxMouseEvent&)
+{
+    if (HasCapture()) ReleaseMouse();
+    if (drag_ != None) NotifyCropChanged();
+    drag_ = None;
+    SetCursor(wxCURSOR_ARROW);
+}
+
+void CropCanvas::OnMotion(wxMouseEvent& e)
+{
+    if (!overlayEnabled_) return;
+    wxPoint p = e.GetPosition();
+    if (drag_ == None) {
+        // If user is dragging with button down but we missed down event, initialize drag from hover state
+        if (e.Dragging() && e.LeftIsDown()) {
+            drag_ = HitTest(p);
+            if (drag_ == None && ImageToPanel(cropImg_).Contains(p)) drag_ = Move;
+            if (drag_ != None) {
+                if (!HasCapture()) CaptureMouse();
+                lastMouse_ = p; // prevent initial jump; first delta == 0
+                // Set appropriate cursor immediately
+                if (drag_ == ResizeTL || drag_ == ResizeBR) SetCursor(wxCURSOR_SIZENWSE);
+                else if (drag_ == ResizeTR || drag_ == ResizeBL) SetCursor(wxCURSOR_SIZENESW);
+                else if (drag_ == ResizeL || drag_ == ResizeR) SetCursor(wxCURSOR_SIZEWE);
+                else if (drag_ == ResizeT || drag_ == ResizeB) SetCursor(wxCURSOR_SIZENS);
+                else SetCursor(wxCURSOR_SIZING);
+                return; // wait for next motion before applying changes
+            }
+        }
+        // Hover cursors for affordance
+        DragMode hit = HitTest(p);
+        if (hit == ResizeTL || hit == ResizeBR) SetCursor(wxCURSOR_SIZENWSE);
+        else if (hit == ResizeTR || hit == ResizeBL) SetCursor(wxCURSOR_SIZENESW);
+        else if (hit == ResizeL || hit == ResizeR) SetCursor(wxCURSOR_SIZEWE);
+        else if (hit == ResizeT || hit == ResizeB) SetCursor(wxCURSOR_SIZENS);
+        else if (ImageToPanel(cropImg_).Contains(p)) SetCursor(wxCURSOR_SIZING);
+        else SetCursor(wxCURSOR_ARROW);
+        return;
+    }
+    wxPoint delta = p - lastMouse_;
+    lastMouse_ = p;
+
+    // Work in image space for precision
+    double s = ScaleFactor(); if (s <= 0) s = 1.0;
+    wxPoint dImg(int(delta.x / s + 0.5), int(delta.y / s + 0.5));
+    if (dImg.x == 0 && dImg.y == 0) {
+        // No movement yet; ignore to avoid zero-delta aspect corrections
+        return;
+    }
+    wxRect prev = cropImg_;
+    wxRect r = prev;
+    const int minSize = 10;
+    if (drag_ == Move)
+    {
+        r.Offset(dImg);
+    }
+    else
+    {
+        // Corner/edge resizing
+        if (drag_ == ResizeTL || drag_ == ResizeL || drag_ == ResizeBL) { r.x += dImg.x; r.width -= dImg.x; }
+        if (drag_ == ResizeTR || drag_ == ResizeR || drag_ == ResizeBR) { r.width += dImg.x; }
+        if (drag_ == ResizeTL || drag_ == ResizeT || drag_ == ResizeTR) { r.y += dImg.y; r.height -= dImg.y; }
+        if (drag_ == ResizeBL || drag_ == ResizeB || drag_ == ResizeBR) { r.height += dImg.y; }
+        // Enforce aspect with appropriate anchor for the dragged edge/corner
+        if (aspect_ > 0.0)
+        {
+            double want = aspect_;
+            int w = std::max(minSize, r.width);
+            int h = std::max(minSize, r.height);
+            if (double(w)/double(h) > want) h = int(w / want + 0.5); else w = int(h * want + 0.5);
+            switch (drag_)
+            {
+                case ResizeTL: {
+                    int ax = prev.x + prev.width; int ay = prev.y + prev.height; r.width = w; r.height = h; r.x = ax - r.width; r.y = ay - r.height; break; }
+                case ResizeTR: {
+                    int ax = prev.x; int ay = prev.y + prev.height; r.width = w; r.height = h; r.x = ax; r.y = ay - r.height; break; }
+                case ResizeBL: {
+                    int ax = prev.x + prev.width; int ay = prev.y; r.width = w; r.height = h; r.x = ax - r.width; r.y = ay; break; }
+                case ResizeBR: {
+                    int ax = prev.x; int ay = prev.y; r.width = w; r.height = h; r.x = ax; r.y = ay; break; }
+                case ResizeL: {
+                    int ax = prev.x + prev.width; r.width = w; r.x = ax - r.width; int cy = prev.y + prev.height/2; r.height = int(r.width / want + 0.5); r.y = cy - r.height/2; break; }
+                case ResizeR: {
+                    int ax = prev.x; r.width = w; r.x = ax; int cy = prev.y + prev.height/2; r.height = int(r.width / want + 0.5); r.y = cy - r.height/2; break; }
+                case ResizeT: {
+                    int ay = prev.y + prev.height; r.height = h; r.y = ay - r.height; int cx = prev.x + prev.width/2; r.width = int(r.height * want + 0.5); r.x = cx - r.width/2; break; }
+                case ResizeB: {
+                    int ay = prev.y; r.height = h; r.y = ay; int cx = prev.x + prev.width/2; r.width = int(r.height * want + 0.5); r.x = cx - r.width/2; break; }
+                default: break;
+            }
+        }
+        if (r.width < minSize) r.width = minSize; if (r.height < minSize) r.height = minSize;
+    }
+    // Clamp to image bounds
+    if (r.x < 0) r.x = 0; if (r.y < 0) r.y = 0;
+    if (r.x + r.width > origImgSize_.GetWidth()) r.x = origImgSize_.GetWidth() - r.width;
+    if (r.y + r.height > origImgSize_.GetHeight()) r.y = origImgSize_.GetHeight() - r.height;
+    cropImg_ = r;
+    Refresh();
+    // Live notify for realtime preview
+    NotifyCropChanged();
+}
+
+void CropCanvas::OnLeave(wxMouseEvent&)
+{
+    SetCursor(wxCURSOR_ARROW);
+}
+
+void CropCanvas::OnSize(wxSizeEvent& event)
+{
+    Refresh();
+    event.Skip();
+}
+
+wxRect CropCanvas::ImageToPanel(const wxRect& r) const
+{
+    double s = ScaleFactor();
+    wxPoint o = ImageOriginOnPanel();
+    return wxRect(o.x + int(r.x * s + 0.5), o.y + int(r.y * s + 0.5), int(r.width * s + 0.5), int(r.height * s + 0.5));
+}
+
+wxRect CropCanvas::PanelToImage(const wxRect& r) const
+{
+    double s = ScaleFactor(); if (s <= 0) s = 1.0;
+    wxPoint o = ImageOriginOnPanel();
+    return wxRect(int((r.x - o.x)/s + 0.5), int((r.y - o.y)/s + 0.5), int(r.width/s + 0.5), int(r.height/s + 0.5));
+}
+
+wxPoint CropCanvas::PanelToImage(const wxPoint& p) const
+{
+    double s = ScaleFactor(); if (s <= 0) s = 1.0;
+    wxPoint o = ImageOriginOnPanel();
+    return wxPoint(int((p.x - o.x)/s + 0.5), int((p.y - o.y)/s + 0.5));
+}
+
+double CropCanvas::ScaleFactor() const
+{
+    if (!bmp_.IsOk() || origImgSize_.GetWidth() <= 0 || origImgSize_.GetHeight() <= 0) return 1.0;
+    // bmp_ is already scaled to fit height by parent; compute its scale vs original image
+    // However, SetImage gives bmp scaled by parent; we can just compute s = bmp_.GetWidth() / origImgSize_.width
+    double sx = double(bmp_.GetWidth()) / double(origImgSize_.GetWidth());
+    double sy = double(bmp_.GetHeight()) / double(origImgSize_.GetHeight());
+    return std::min(sx, sy);
+}
+
+wxPoint CropCanvas::ImageOriginOnPanel() const
+{
+    // Center the bitmap within panel
+    wxSize cs = GetClientSize();
+    int x = (cs.x - bmp_.GetWidth())/2; if (x < 0) x = 0;
+    int y = (cs.y - bmp_.GetHeight())/2; if (y < 0) y = 0;
+    return wxPoint(x,y);
+}
+
+CropCanvas::DragMode CropCanvas::HitTest(const wxPoint& p) const
+{
+    wxRect pr = ImageToPanel(cropImg_);
+    const int tol = 12; // larger tolerance for easier selection
+    auto nearPt = [&](int x, int y){ return std::abs(p.x - x) <= tol && std::abs(p.y - y) <= tol; };
+    if (nearPt(pr.x, pr.y)) return ResizeTL;
+    if (nearPt(pr.x + pr.width, pr.y)) return ResizeTR;
+    if (nearPt(pr.x, pr.y + pr.height)) return ResizeBL;
+    if (nearPt(pr.x + pr.width, pr.y + pr.height)) return ResizeBR;
+    // edges
+    if (std::abs(p.x - pr.x) <= tol && p.y >= pr.y && p.y <= pr.y + pr.height) return ResizeL;
+    if (std::abs(p.x - (pr.x + pr.width)) <= tol && p.y >= pr.y && p.y <= pr.y + pr.height) return ResizeR;
+    if (std::abs(p.y - pr.y) <= tol && p.x >= pr.x && p.x <= pr.x + pr.width) return ResizeT;
+    if (std::abs(p.y - (pr.y + pr.height)) <= tol && p.x >= pr.x && p.x <= pr.x + pr.width) return ResizeB;
+    return None;
+}
+
+void CropCanvas::ConstrainAspect(wxRect& r) const
+{
+    if (aspect_ <= 0.0) return;
+    // Maintain anchor at top-left for simplicity after ops that reduced width/height
+    if (r.width <= 0 || r.height <= 0) return;
+    double want = aspect_;
+    if (double(r.width)/double(r.height) > want)
+    {
+        r.width = int(r.height * want + 0.5);
+    }
+    else
+    {
+        r.height = int(r.width / want + 0.5);
+    }
+}
+
+void CropCanvas::NotifyCropChanged()
+{
+    if (!owner_) return;
+    if (!owner_->CurrentImagePath().IsEmpty())
+        owner_->SetCropRect(owner_->CurrentImagePath(), cropImg_);
+    // Trigger preview recompute for crop mode
+    if (!owner_->CurrentImagePath().IsEmpty())
+    {
+        // Use last-known settings by re-invoking UpdatePreview with no change; main frame drives it normally,
+        // but here we can simply call LayoutImages by asking parent to UpdatePreview with same params
+        // Instead, post a size event to force LayoutImages, and rely on caller to update preview on settings change.
+        // For immediate feedback, we rebuild result here by faking a settings struct.
+        ImageSettings s; s.width = 0; s.height = 0; s.whiteThreshold = -1; s.padding = 0.0; s.blurRadius = 0;
+        owner_->UpdatePreview(owner_->CurrentImagePath(), s, ProcessingMode::Crop, MaskSettings());
+    }
 }

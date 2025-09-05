@@ -6,6 +6,7 @@
 #include "WxPreviewPanel.hpp"
 #include "extend_canvas.hpp"
 #include "vehicle_mask.hpp"
+#include <opencv2/opencv.hpp>
 
 wxBEGIN_EVENT_TABLE(WxMainFrame, wxFrame)
 wxEND_EVENT_TABLE()
@@ -40,6 +41,8 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         if (!currentImagePath_.IsEmpty())
         {
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
+            // Push crop aspect before updating preview so overlay is consistent
+            preview_->SetCropAspectRatio(controls_->getCropAspectRatio());
             preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
         }
     });
@@ -54,6 +57,7 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         {
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
         }
+        preview_->SetCropAspectRatio(controls_->getCropAspectRatio());
         preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
     });
 
@@ -62,7 +66,14 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         if (batch.IsEmpty()) return;
         wxString outDir = controls_->getOutputFolder();
         if (outDir.IsEmpty()) { preview_->SetStatus("No output folder selected", true); return; }
-        wxMkdir(outDir);
+        // Create full directory path robustly (handles spaces and intermediate dirs)
+        wxFileName outFn(outDir, "");
+        if (!outFn.DirExists()) {
+            if (!outFn.Mkdir(wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL)) {
+                preview_->SetStatus("Failed to create output folder", true);
+                return;
+            }
+        }
         int scale = controls_->getScaleFactor();
         int processed = 0, ok = 0;
         for (auto& file : batch)
@@ -88,17 +99,55 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
                     if (wxRenameFile(tempOut, finalPath)) ++ok;
                 }
             }
-            else
+            else if (controls_->getMode() == ProcessingMode::VehicleMask)
             {
                 // Vehicle Mask mode
                 wxFileName inFn(file);
                 wxString outName = inFn.GetName() + "_mask.png"; // always PNG
                 wxString finalPath = wxFileName(outDir, outName).GetFullPath();
-                // Ensure output directory exists
-                wxMkdir(outDir);
+                // Ensure output directory exists (already ensured above)
                 // Call shared mask generator (implemented to call an external SAM2 script)
                 success = generateVehicleMask(std::string(file.mb_str()), std::string(finalPath.mb_str()), controls_->getMaskSettings());
                 if (success) ++ok;
+            }
+            else if (controls_->getMode() == ProcessingMode::Crop)
+            {
+                // Crop mode: use preview's crop rect if available; else center based on aspect
+                wxRect cr;
+                bool haveRect = preview_->GetCropRect(file, cr);
+                double ar = controls_->getCropAspectRatio();
+                // Load image
+                cv::Mat img = cv::imread(std::string(file.mb_str()));
+                if (!img.empty())
+                {
+                    if (!haveRect)
+                    {
+                        int W = img.cols, H = img.rows;
+                        int cw = int(W * 0.8 + 0.5), ch = int(H * 0.8 + 0.5);
+                        if (ar > 0.0)
+                        {
+                            if (double(cw)/double(ch) > ar) cw = int(ch * ar + 0.5); else ch = int(cw / ar + 0.5);
+                        }
+                        int cx = (W - cw)/2, cy = (H - ch)/2;
+                        cr = wxRect(cx, cy, cw, ch);
+                    }
+                    cv::Rect roi(cr.x, cr.y, cr.width, cr.height);
+                    roi &= cv::Rect(0,0,img.cols, img.rows);
+                    cv::Mat cropped = img(roi).clone();
+                    int rw = std::max(1, s.width * scale);
+                    int rh = std::max(1, s.height * scale);
+                    // Resize to requested output size if provided
+                    if (s.width > 0 && s.height > 0)
+                    {
+                        cv::Mat resized; cv::resize(cropped, resized, cv::Size(rw, rh), 0,0, cv::INTER_LANCZOS4);
+                        cropped = resized;
+                    }
+                    wxFileName inFn(file);
+                    wxString outName = inFn.GetName() + "_crop." + inFn.GetExt();
+                    wxString finalPath = wxFileName(outDir, outName).GetFullPath();
+                    success = cv::imwrite(std::string(finalPath.mb_str()), cropped);
+                    if (success) ++ok;
+                }
             }
             ++processed;
         }
