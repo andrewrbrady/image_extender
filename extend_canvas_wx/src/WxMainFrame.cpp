@@ -14,6 +14,19 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
     : wxFrame(parent, wxID_ANY, "Extend Canvas (wxWidgets)", wxDefaultPosition, wxSize(2200, 1300))
 {
     SetMinSize(wxSize(1600, 900));
+    // Create a basic menu bar to enable common macOS shortcuts
+    // Standard IDs ensure Cmd+Q (Quit) and Cmd+H (Hide) work automatically on macOS
+    auto* menuBar = new wxMenuBar();
+    auto* fileMenu = new wxMenu();
+#ifdef __WXMAC__
+    fileMenu->Append(wxID_OSX_HIDE);
+    fileMenu->Append(wxID_OSX_HIDEOTHERS);
+    fileMenu->AppendSeparator();
+#endif
+    fileMenu->Append(wxID_EXIT);
+    menuBar->Append(fileMenu, "&File");
+    SetMenuBar(menuBar);
+    Bind(wxEVT_MENU, &WxMainFrame::OnQuit, this, wxID_EXIT);
     splitter_ = new wxSplitterWindow(this, wxID_ANY);
     controls_ = new WxControlPanel(splitter_);
     preview_  = new WxPreviewPanel(splitter_);
@@ -91,4 +104,9 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         }
         preview_->SetStatus(wxString::Format("Processing complete: %d/%zu images processed successfully", ok, batch.size()), ok != (int)batch.size());
     });
+}
+
+void WxMainFrame::OnQuit(wxCommandEvent&)
+{
+    Close(true);
 }

@@ -27,6 +27,17 @@ public:
         frame->Show(true);
         return true;
     }
+    
+#ifdef __WXMAC__
+    void MacReopenApp() override
+    {
+        // When user clicks Dock icon after hide, ensure main window is visible
+        if (auto* win = GetTopWindow()) {
+            win->Show(true);
+            win->Raise();
+        }
+    }
+#endif
 };
 
 wxIMPLEMENT_APP(ExtendCanvasApp);

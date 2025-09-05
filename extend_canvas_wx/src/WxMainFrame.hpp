@@ -22,4 +22,7 @@ private:
     wxString currentImagePath_;
 
     wxDECLARE_EVENT_TABLE();
+
+private:
+    void OnQuit(wxCommandEvent&);
 };
