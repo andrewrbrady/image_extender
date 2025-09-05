@@ -5,6 +5,7 @@
 #include "WxControlPanel.hpp"
 #include "WxPreviewPanel.hpp"
 #include "extend_canvas.hpp"
+#include "vehicle_mask.hpp"
 
 wxBEGIN_EVENT_TABLE(WxMainFrame, wxFrame)
 wxEND_EVENT_TABLE()
@@ -26,7 +27,7 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         if (!currentImagePath_.IsEmpty())
         {
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
-            preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_]);
+            preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
         }
     });
 
@@ -40,7 +41,7 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
         {
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
         }
-        preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_]);
+        preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
     });
 
     controls_->Bind(wxEVT_WXUI_PROCESS_REQUESTED, [this](wxCommandEvent&){
@@ -59,16 +60,32 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
             int rh = s.height * scale;
             int finalW = s.finalWidth > 0 ? s.finalWidth * scale : -1;
             int finalH = s.finalHeight > 0 ? s.finalHeight * scale : -1;
-            bool success = extendCanvas(std::string(file.mb_str()), rw, rh, s.whiteThreshold, s.padding, finalW, finalH, s.blurRadius);
-            if (success)
+            bool success = false;
+            if (controls_->getMode() == ProcessingMode::ExtendCanvas)
             {
+                success = extendCanvas(std::string(file.mb_str()), rw, rh, s.whiteThreshold, s.padding, finalW, finalH, s.blurRadius);
+                if (success)
+                {
+                    wxFileName inFn(file);
+                    wxString tempOut = inFn.GetPathWithSep() + inFn.GetName() + "_extended." + inFn.GetExt();
+                    wxString outName = inFn.GetName() + "_extended";
+                    if (scale > 1) outName += wxString::Format("_%dx", scale);
+                    outName += "." + inFn.GetExt();
+                    wxString finalPath = wxFileName(outDir, outName).GetFullPath();
+                    if (wxRenameFile(tempOut, finalPath)) ++ok;
+                }
+            }
+            else
+            {
+                // Vehicle Mask mode
                 wxFileName inFn(file);
-                wxString tempOut = inFn.GetPathWithSep() + inFn.GetName() + "_extended." + inFn.GetExt();
-                wxString outName = inFn.GetName() + "_extended";
-                if (scale > 1) outName += wxString::Format("_%dx", scale);
-                outName += "." + inFn.GetExt();
+                wxString outName = inFn.GetName() + "_mask.png"; // always PNG
                 wxString finalPath = wxFileName(outDir, outName).GetFullPath();
-                if (wxRenameFile(tempOut, finalPath)) ++ok;
+                // Ensure output directory exists
+                wxMkdir(outDir);
+                // Call shared mask generator (implemented to call an external SAM2 script)
+                success = generateVehicleMask(std::string(file.mb_str()), std::string(finalPath.mb_str()), controls_->getMaskSettings());
+                if (success) ++ok;
             }
             ++processed;
         }

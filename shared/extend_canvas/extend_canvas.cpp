@@ -1,5 +1,6 @@
-// Shared extend_canvas implementation (moved from Qt UI tree)
+// Shared extend_canvas implementation
 #include "extend_canvas.hpp"
+#include "util/ImageOps.hpp"
 
 #include <opencv2/opencv.hpp>
 #include <filesystem>
@@ -17,48 +18,9 @@ namespace
             .string();
     }
 
-    static int centerSampleThreshold(const Mat &img, int stripeH = 20, int stripeW = 40)
-    {
-        int cx = img.cols / 2;
-        int w = std::min({stripeW, cx - 1, img.cols - cx - 1});
-        int h = std::min(stripeH, img.rows / 10);
-
-        Rect topR(cx - w, 0, 2 * w + 1, h);
-        Rect botR(cx - w, img.rows - h, 2 * w + 1, h);
-
-        Mat grayTop, grayBot;
-        cvtColor(img(topR), grayTop, COLOR_BGR2GRAY);
-        cvtColor(img(botR), grayBot, COLOR_BGR2GRAY);
-        double mTop = mean(grayTop)[0];
-        double mBot = mean(grayBot)[0];
-        int thr = static_cast<int>(std::min(mTop, mBot) - 5.0);
-        return std::clamp(thr, 180, 250);
-    }
-
-    static bool findForegroundBounds(const Mat &img, int &top, int &bot, int whiteThr)
-    {
-        Mat mask;
-        inRange(img, Scalar(whiteThr, whiteThr, whiteThr), Scalar(255, 255, 255), mask);
-        bitwise_not(mask, mask);
-        reduce(mask, mask, 1, REDUCE_MAX, CV_8U);
-        top = -1; bot = -1;
-        for (int r = 0; r < mask.rows; ++r)
-        {
-            if (mask.at<uchar>(r, 0)) { if (top == -1) top = r; bot = r; }
-        }
-        return top != -1;
-    }
-
-    static bool findForegroundBoundsX(const Mat &img, int &left, int &right, int whiteThr)
-    {
-        Mat mask; inRange(img, Scalar(whiteThr, whiteThr, whiteThr), Scalar(255, 255, 255), mask);
-        bitwise_not(mask, mask);
-        reduce(mask, mask, 0, REDUCE_MAX, CV_8U);
-        left = -1; right = -1;
-        for (int c = 0; c < mask.cols; ++c)
-            if (mask.at<uchar>(0, c)) { if (left == -1) left = c; right = c; }
-        return left != -1;
-    }
+    using util::centerSampleThreshold;
+    using util::findForegroundBounds;
+    using util::findForegroundBoundsX;
 
     static Mat makeStrip(const Mat &src, int newH, int W)
     {
@@ -189,4 +151,3 @@ bool extendCanvas(const std::string &inPath, int reqW, int reqH, int whiteThr,
     const std::string outPath = makeOutputPath(std::filesystem::path(inPath));
     return imwrite(outPath, canvas);
 }
-

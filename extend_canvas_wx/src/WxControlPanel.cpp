@@ -38,6 +38,17 @@ WxControlPanel::WxControlPanel(wxWindow* parent) : wxPanel(parent)
 void WxControlPanel::BuildUI()
 {
     auto* root = new wxBoxSizer(wxVERTICAL);
+    // Section: Mode selector
+    auto* modeBox = new wxStaticBoxSizer(wxVERTICAL, this, "Mode");
+    auto* modeRow = new wxBoxSizer(wxHORIZONTAL);
+    modeRow->Add(new wxStaticText(this, wxID_ANY, "Feature:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    modeBox_ = new wxComboBox(this, wxID_ANY);
+    modeBox_->Append("Extend Canvas");
+    modeBox_->Append("Vehicle Mask (SAM2)");
+    modeBox_->SetSelection(0);
+    modeRow->Add(modeBox_, 1);
+    modeBox->Add(modeRow, 0, wxALL | wxEXPAND, 6);
+    root->Add(modeBox, 0, wxEXPAND | wxALL, 6);
     // Section: Batch list + buttons
     auto* listLabel = new wxStaticText(this, wxID_ANY, "Batch Files");
     root->Add(listLabel, 0, wxALL, 6);
@@ -116,6 +127,49 @@ void WxControlPanel::BuildUI()
 
     root->Add(paramsBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 6);
 
+    // Section: Masking parameters (visible for Vehicle Mask mode)
+    maskBox_ = new wxStaticBoxSizer(wxVERTICAL, this, "Masking (Vehicle Mask)");
+    auto* maskRow1 = new wxBoxSizer(wxHORIZONTAL);
+    maskRow1->Add(new wxStaticText(this, wxID_ANY, "Canny Low:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    cannyLow_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80,-1), wxSP_ARROW_KEYS, 0, 1000, 50);
+    maskRow1->Add(cannyLow_, 0, wxRIGHT, 10);
+    maskRow1->Add(new wxStaticText(this, wxID_ANY, "Canny High:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    cannyHigh_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80,-1), wxSP_ARROW_KEYS, 0, 2000, 150);
+    maskRow1->Add(cannyHigh_, 0, wxRIGHT, 10);
+    maskRow1->Add(new wxStaticText(this, wxID_ANY, "Kernel:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    morphKernel_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(70,-1), wxSP_ARROW_KEYS, 1, 99, 7);
+    maskRow1->Add(morphKernel_, 0, wxRIGHT, 10);
+    maskBox_->Add(maskRow1, 0, wxALL, 6);
+
+    auto* maskRow2 = new wxBoxSizer(wxHORIZONTAL);
+    maskRow2->Add(new wxStaticText(this, wxID_ANY, "Dilate:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    dilateIters_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(70,-1), wxSP_ARROW_KEYS, 0, 50, 2);
+    maskRow2->Add(dilateIters_, 0, wxRIGHT, 10);
+    maskRow2->Add(new wxStaticText(this, wxID_ANY, "Erode:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    erodeIters_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(70,-1), wxSP_ARROW_KEYS, 0, 50, 0);
+    maskRow2->Add(erodeIters_, 0, wxRIGHT, 10);
+    maskRow2->Add(new wxStaticText(this, wxID_ANY, "Min area:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    minArea_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(90,-1), wxSP_ARROW_KEYS, 0, 20000000, 5000);
+    maskRow2->Add(minArea_, 0, wxRIGHT, 10);
+    maskBox_->Add(maskRow2, 0, wxALL, 6);
+
+    auto* maskRow3 = new wxBoxSizer(wxHORIZONTAL);
+    whiteCycAssist_ = new wxCheckBox(this, wxID_ANY, "White cyc assist");
+    whiteCycAssist_->SetValue(true);
+    maskRow3->Add(whiteCycAssist_, 0, wxRIGHT, 10);
+    maskRow3->Add(new wxStaticText(this, wxID_ANY, "White thr:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    whiteThrMask_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80,-1), wxSP_ARROW_KEYS, -1, 255, -1);
+    maskRow3->Add(whiteThrMask_, 0, wxRIGHT, 10);
+    maskRow3->Add(new wxStaticText(this, wxID_ANY, "Feather:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    featherRadiusMask_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80,-1), wxSP_ARROW_KEYS, 0, 50, 0);
+    maskRow3->Add(featherRadiusMask_, 0, wxRIGHT, 10);
+    invertMask_ = new wxCheckBox(this, wxID_ANY, "Invert output");
+    invertMask_->SetValue(false);
+    maskRow3->Add(invertMask_, 0, wxRIGHT, 10);
+    maskBox_->Add(maskRow3, 0, wxALL, 6);
+
+    root->Add(maskBox_, 0, wxEXPAND | wxLEFT | wxRIGHT, 6);
+
     // Section: Output folder
     auto* outBox = new wxStaticBoxSizer(wxVERTICAL, this, "Output Folder");
     outputFolder_ = new wxTextCtrl(this, wxID_ANY);
@@ -160,6 +214,43 @@ void WxControlPanel::WireEvents()
     whiteThr_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
     padding_->Bind(wxEVT_SPINCTRLDOUBLE, fireSettingsChanged);
     blurRadius_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
+    // Also react to direct text edits in spin controls
+    width_->Bind(wxEVT_TEXT, fireSettingsChanged);
+    height_->Bind(wxEVT_TEXT, fireSettingsChanged);
+    whiteThr_->Bind(wxEVT_TEXT, fireSettingsChanged);
+    blurRadius_->Bind(wxEVT_TEXT, fireSettingsChanged);
+    // Masking controls post to preview updates
+    auto fireMaskChanged = [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); };
+    cannyLow_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    cannyHigh_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    morphKernel_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    dilateIters_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    erodeIters_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    // text edit bindings for responsive preview
+    cannyLow_->Bind(wxEVT_TEXT, fireMaskChanged);
+    cannyHigh_->Bind(wxEVT_TEXT, fireMaskChanged);
+    morphKernel_->Bind(wxEVT_TEXT, fireMaskChanged);
+    dilateIters_->Bind(wxEVT_TEXT, fireMaskChanged);
+    erodeIters_->Bind(wxEVT_TEXT, fireMaskChanged);
+    whiteCycAssist_->Bind(wxEVT_CHECKBOX, fireMaskChanged);
+    whiteThrMask_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    whiteThrMask_->Bind(wxEVT_TEXT, fireMaskChanged);
+    minArea_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    featherRadiusMask_->Bind(wxEVT_SPINCTRL, fireMaskChanged);
+    minArea_->Bind(wxEVT_TEXT, fireMaskChanged);
+    featherRadiusMask_->Bind(wxEVT_TEXT, fireMaskChanged);
+    invertMask_->Bind(wxEVT_CHECKBOX, fireMaskChanged);
+    modeBox_->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&){
+        EnsureDefaultOutputFolder();
+        const bool show = (getMode() == ProcessingMode::VehicleMask);
+        if (maskBox_) maskBox_->ShowItems(show);
+        Layout();
+        wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED);
+        wxPostEvent(this, ev);
+    });
+
+    // Initial visibility per mode (hide/show all items in the sizer)
+    if (maskBox_) maskBox_->ShowItems(getMode() == ProcessingMode::VehicleMask);
 
     processBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_PROCESS_REQUESTED); wxPostEvent(this, ev); });
 
@@ -199,11 +290,23 @@ void WxControlPanel::UpdateProcessEnabled()
 
 void WxControlPanel::EnsureDefaultOutputFolder()
 {
-    if (outputFolder_->IsEmpty() && !batchFiles_.IsEmpty())
-    {
-        wxFileName fn(batchFiles_[0]);
-        wxString def = fn.GetPathWithSep() + "extended_images";
-        outputFolder_->ChangeValue(def);
+    if (batchFiles_.IsEmpty()) return;
+    wxFileName fn(batchFiles_[0]);
+    const wxString defExtend = fn.GetPathWithSep() + "extended_images";
+    const wxString defMasks  = fn.GetPathWithSep() + "masks";
+    const bool wantMasks = (getMode() == ProcessingMode::VehicleMask);
+    const wxString desired = wantMasks ? defMasks : defExtend;
+
+    if (outputFolder_->IsEmpty()) {
+        outputFolder_->ChangeValue(desired);
+        return;
+    }
+
+    // If user hasn't customized (still at the other mode's default), switch to this mode's default
+    if (!wantMasks && outputFolder_->GetValue() == defMasks) {
+        outputFolder_->ChangeValue(desired);
+    } else if (wantMasks && outputFolder_->GetValue() == defExtend) {
+        outputFolder_->ChangeValue(desired);
     }
 }
 
@@ -247,4 +350,26 @@ wxString WxControlPanel::getOutputFolder() const
 wxArrayString WxControlPanel::getBatchFiles() const
 {
     return batchFiles_;
+}
+
+ProcessingMode WxControlPanel::getMode() const
+{
+    int sel = modeBox_ ? modeBox_->GetSelection() : 0;
+    return (sel == 1) ? ProcessingMode::VehicleMask : ProcessingMode::ExtendCanvas;
+}
+
+MaskSettings WxControlPanel::getMaskSettings() const
+{
+    MaskSettings m;
+    m.cannyLow = cannyLow_->GetValue();
+    m.cannyHigh = cannyHigh_->GetValue();
+    int k = morphKernel_->GetValue(); if (k % 2 == 0) k += 1; if (k < 1) k = 1; m.morphKernel = k;
+    m.dilateIters = dilateIters_->GetValue();
+    m.erodeIters = erodeIters_->GetValue();
+    m.useWhiteCycAssist = whiteCycAssist_->GetValue();
+    m.whiteThreshold = whiteThrMask_->GetValue();
+    m.minArea = minArea_->GetValue();
+    m.featherRadius = featherRadiusMask_->GetValue();
+    m.invert = invertMask_->GetValue();
+    return m;
 }

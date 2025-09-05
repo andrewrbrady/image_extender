@@ -47,12 +47,19 @@ add_executable(${PROJECT_NAME} MACOSX_BUNDLE
     # Reuse the shared extend_canvas implementation (moved to shared/)
     ../shared/extend_canvas/extend_canvas.cpp
     ../shared/extend_canvas/extend_canvas.hpp
+    # Vehicle mask support
+    ../shared/vehicle_mask/vehicle_mask.cpp
+    ../shared/vehicle_mask/vehicle_mask.hpp
+    # Shared utility implementations
+    ../shared/util/ImageOps.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/extend_canvas
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/vehicle_mask
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shared
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

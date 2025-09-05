@@ -1,5 +1,0 @@
-# Hashes of file build rules.
-5d0aae00d9c666d6a44bb54b81a4ad27 CMakeFiles/extend_canvas_autogen
-5d0aae00d9c666d6a44bb54b81a4ad27 CMakeFiles/extend_canvas_ui_autogen
-f4aab898b6fb6645e52ae1b8a90c3f39 extend_canvas_autogen/timestamp
-a687e628ec40c6837c493011d4f07422 extend_canvas_ui_autogen/timestamp

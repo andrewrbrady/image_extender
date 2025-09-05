@@ -10,7 +10,9 @@
 #include <map>
 #include <wx/dnd.h>
 
-#include "models/ImageSettings.hpp" // from extend_canvas_ui/src
+#include "models/ImageSettings.hpp"
+#include "models/ProcessingMode.hpp"
+#include "models/MaskSettings.hpp"
 
 // Custom event declarations
 wxDECLARE_EVENT(wxEVT_WXUI_SETTINGS_CHANGED, wxCommandEvent);
@@ -30,6 +32,8 @@ public:
     int getScaleFactor() const; // 1, 2, 4
     wxString getOutputFolder() const;
     wxArrayString getBatchFiles() const;
+    ProcessingMode getMode() const;
+    MaskSettings getMaskSettings() const;
 
 private:
     void BuildUI();
@@ -51,6 +55,21 @@ private:
     wxSpinCtrl* blurRadius_ {nullptr};
     wxComboBox* scaleBox_ {nullptr};
     wxButton* processBtn_ {nullptr};
+
+    wxComboBox* modeBox_ {nullptr};
+
+    // Masking controls (shown in Vehicle Mask mode)
+    wxStaticBoxSizer* maskBox_ {nullptr};
+    wxSpinCtrl* cannyLow_ {nullptr};
+    wxSpinCtrl* cannyHigh_ {nullptr};
+    wxSpinCtrl* morphKernel_ {nullptr};
+    wxSpinCtrl* dilateIters_ {nullptr};
+    wxSpinCtrl* erodeIters_ {nullptr};
+    wxCheckBox* whiteCycAssist_ {nullptr};
+    wxSpinCtrl* whiteThrMask_ {nullptr};
+    wxSpinCtrl* minArea_ {nullptr};
+    wxSpinCtrl* featherRadiusMask_ {nullptr};
+    wxCheckBox* invertMask_ {nullptr};
 
     wxTextCtrl* outputFolder_ {nullptr};
     wxButton* browseBtn_ {nullptr};

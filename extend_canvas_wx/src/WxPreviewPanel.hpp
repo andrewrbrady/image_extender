@@ -4,6 +4,8 @@
 #include <wx/statbmp.h>
 #include <wx/timer.h>
 #include "models/ImageSettings.hpp"
+#include "models/ProcessingMode.hpp"
+#include "models/MaskSettings.hpp"
 
 namespace cv { class Mat; }
 
@@ -12,7 +14,9 @@ class WxPreviewPanel : public wxPanel
 public:
     explicit WxPreviewPanel(wxWindow* parent);
 
-    void UpdatePreview(const wxString& imagePath, const ImageSettings& settings);
+    void UpdatePreview(const wxString& imagePath, const ImageSettings& settings,
+                       ProcessingMode mode = ProcessingMode::ExtendCanvas,
+                       const MaskSettings mask = MaskSettings());
     void ClearPreview();
     void SetStatus(const wxString& message, bool isError = false);
 

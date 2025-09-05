@@ -107,7 +107,7 @@ void WxPreviewPanel::OnSize(wxSizeEvent&)
     LayoutImages();
 }
 
-void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSettings& settings)
+void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSettings& settings, ProcessingMode mode, const MaskSettings mask)
 {
     currentImagePath_ = imagePath;
     // Load original (for preview-only) and build processed result entirely in memory
@@ -130,6 +130,49 @@ void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSetting
     originalMat_ = new cv::Mat(img.clone());
     originalCache_ = toWxBitmap(img);
     originalTitle_->SetLabel("Original (" + wxString::Format("%dx%d", originalCache_.GetWidth(), originalCache_.GetHeight()) + ")");
+
+    // If in Vehicle Mask mode, build a quick heuristic mask preview and return
+    if (mode == ProcessingMode::VehicleMask)
+    {
+        cv::Mat gray, edges, mask, vis;
+        cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+        cv::medianBlur(gray, gray, 5);
+        cv::Canny(gray, edges, 50, 150);
+        auto kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7,7));
+        cv::dilate(edges, edges, kernel, cv::Point(-1,-1), 2);
+        cv::threshold(edges, mask, 1, 255, cv::THRESH_BINARY);
+        // Present mask as black/white in result pane
+        cv::Mat mask3; cv::cvtColor(mask, mask3, cv::COLOR_GRAY2BGR);
+        if (resultMat_) { delete resultMat_; resultMat_ = nullptr; }
+        resultMat_ = new cv::Mat(mask3.clone());
+        auto toWxBitmap = [](const cv::Mat& bgr){ cv::Mat rgb; cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB); size_t size = (size_t)rgb.cols * (size_t)rgb.rows * 3; unsigned char* buf = new unsigned char[size]; std::memcpy(buf, rgb.data, size); wxImage wi(rgb.cols, rgb.rows, buf, false); return wxBitmap(wi); };
+        resultCache_ = toWxBitmap(mask3);
+        resultTitle_->SetLabel("Mask Preview (heuristic)");
+        LayoutImages();
+        ShowOverlay(wxString::FromUTF8("Preview"), wxColour(100, 100, 100), 600);
+        return;
+    }
+
+    // If in Vehicle Mask mode, build a heuristic mask preview using provided settings and return
+    if (mode == ProcessingMode::VehicleMask)
+    {
+        // Prepare preview bitmaps
+        if (originalMat_) { delete originalMat_; originalMat_ = nullptr; }
+        originalMat_ = new cv::Mat(img.clone());
+        originalCache_ = toWxBitmap(img);
+        originalTitle_->SetLabel("Original (" + wxString::Format("%dx%d", originalCache_.GetWidth(), originalCache_.GetHeight()) + ")");
+        // Compute mask via shared logic for consistency
+        extern bool computeVehicleMaskMat(const cv::Mat&, cv::Mat&, const MaskSettings&);
+        cv::Mat maskImg; computeVehicleMaskMat(img, maskImg, mask);
+        cv::Mat mask3; cv::cvtColor(maskImg, mask3, cv::COLOR_GRAY2BGR);
+        if (resultMat_) { delete resultMat_; resultMat_ = nullptr; }
+        resultMat_ = new cv::Mat(mask3.clone());
+        resultCache_ = toWxBitmap(mask3);
+        resultTitle_->SetLabel("Mask Preview");
+        LayoutImages();
+        ShowOverlay(wxString::FromUTF8("Preview"), wxColour(100, 100, 100), 600);
+        return;
+    }
 
     // Helper lambdas replicating core logic (no disk I/O)
     auto centerSampleThreshold = [](const Mat& im, int stripeH = 20, int stripeW = 40){

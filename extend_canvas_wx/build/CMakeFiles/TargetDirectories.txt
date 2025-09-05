@@ -1,3 +1,0 @@
-/Users/andrewbrady/Development/arb_cli_tools/image_extender/extend_canvas_wx/build/CMakeFiles/extend_canvas_wx.dir
-/Users/andrewbrady/Development/arb_cli_tools/image_extender/extend_canvas_wx/build/CMakeFiles/edit_cache.dir
-/Users/andrewbrady/Development/arb_cli_tools/image_extender/extend_canvas_wx/build/CMakeFiles/rebuild_cache.dir
