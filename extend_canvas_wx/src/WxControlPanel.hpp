@@ -34,6 +34,7 @@ public:
     wxArrayString getBatchFiles() const;
     ProcessingMode getMode() const;
     MaskSettings getMaskSettings() const;
+    int getSplitterCount() const;
 
 private:
     void BuildUI();
@@ -59,6 +60,8 @@ private:
     wxButton* processBtn_ {nullptr};
 
     wxComboBox* modeBox_ {nullptr};
+    wxStaticText* splitsLabel_ {nullptr};
+    wxSpinCtrl* splits_ {nullptr};
 
     // Masking controls (shown in Vehicle Mask mode)
     wxStaticBoxSizer* maskBox_ {nullptr};

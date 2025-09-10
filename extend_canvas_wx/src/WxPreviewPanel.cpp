@@ -134,6 +134,7 @@ void WxPreviewPanel::OnSize(wxSizeEvent&)
 
 void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSettings& settings, ProcessingMode mode, const MaskSettings mask)
 {
+    currentMode_ = mode;
     currentImagePath_ = imagePath;
     // Load original (for preview-only) and build processed result entirely in memory
     cv::Mat img = cv::imread(std::string(imagePath.mb_str()));
@@ -155,7 +156,10 @@ void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSetting
     originalMat_ = new cv::Mat(img.clone());
     originalCache_ = toWxBitmap(img);
     originalTitle_->SetLabel("Original (" + wxString::Format("%dx%d", originalCache_.GetWidth(), originalCache_.GetHeight()) + ")");
-    if (originalCanvas_) originalCanvas_->EnableOverlay(mode == ProcessingMode::Crop);
+    if (originalCanvas_) {
+        originalCanvas_->EnableOverlay(mode == ProcessingMode::Crop || mode == ProcessingMode::Splitter);
+        if (mode == ProcessingMode::Splitter) originalCanvas_->SetGuides(std::max(2, splitterCount_), 1); else originalCanvas_->SetGuides(0, 0);
+    }
 
     // If in Vehicle Mask mode, build a mask preview using provided settings and return
     if (mode == ProcessingMode::VehicleMask)
@@ -223,6 +227,71 @@ void WxPreviewPanel::UpdatePreview(const wxString& imagePath, const ImageSetting
         Mat right = img(Rect(seamX, 0, overlap, img.rows)).clone();
         for (int i=0;i<overlap;++i){ double a = (i+1.0)/(overlap+1.0); Mat dst = img(Rect(seamX - overlap + i, 0, 1, img.rows)); addWeighted(right.col(i), a, left.col(i), 1.0 - a, 0.0, dst); }
     };
+
+    // Splitter preview: show N-panel split guidelines and scaled crop
+    if (mode == ProcessingMode::Splitter)
+    {
+        // Initialize crop rect if missing for this image, using triple-panel aspect
+        if (!cropByImage_.count(imagePath))
+        {
+            int W = img.cols, H = img.rows;
+            int cw = int(W * 0.9 + 0.5);
+            int ch = int(H * 0.9 + 0.5);
+            if (cropAspect_ > 0.0)
+            {
+                double want = cropAspect_;
+                if (double(cw)/double(ch) > want) { cw = int(ch * want + 0.5); } else { ch = int(cw / want + 0.5); }
+            }
+            if (cw > W) cw = W; if (ch > H) ch = H;
+            int cx = (W - cw)/2; int cy = (H - ch)/2;
+            cropByImage_[imagePath] = wxRect(cx, cy, cw, ch);
+        }
+        // Update canvas with overlay + guides
+        originalCanvas_->EnableOverlay(true);
+        originalCanvas_->SetAspectRatio(cropAspect_);
+        originalCanvas_->SetCropRectImage(cropByImage_[imagePath]);
+
+        // Build a preview image as the cropped area resized to 3*W x H with guide lines
+        wxRect cr = cropByImage_[imagePath];
+        int n = std::max(2, splitterCount_);
+        // Align width to multiple of n to ensure equal-width panels
+        int alignedW = std::max(n, (cr.width / n) * n);
+        if (alignedW != cr.width)
+        {
+            int dx = (cr.width - alignedW) / 2;
+            cr.x += dx; cr.width = alignedW;
+        }
+        cv::Rect roi(cr.x, cr.y, cr.width, cr.height);
+        roi &= cv::Rect(0,0,img.cols, img.rows);
+        cv::Mat cropped = img(roi).clone();
+        int panelW = settings.width > 0 ? settings.width : std::max(1, cropped.cols / n);
+        int panelH = settings.height > 0 ? settings.height : cropped.rows;
+        int previewW = std::max(n, panelW * n);
+        int previewH = std::max(1, panelH);
+        cv::Mat resized; cv::resize(cropped, resized, cv::Size(previewW, previewH), 0,0, cv::INTER_LANCZOS4);
+        // Guidelines
+        for (int i = 1; i < n; ++i)
+        {
+            int x = panelW * i;
+            cv::line(resized, cv::Point(x, 0), cv::Point(x, resized.rows-1), cv::Scalar(40,220,90), 2);
+        }
+
+        if (resultMat_) { delete resultMat_; resultMat_ = nullptr; }
+        resultMat_ = new cv::Mat(resized.clone());
+        auto toWxBitmap2 = [](const cv::Mat& bgr){
+            cv::Mat rgb; cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+            const size_t size = static_cast<size_t>(rgb.cols) * static_cast<size_t>(rgb.rows) * 3;
+            unsigned char* buf = new unsigned char[size];
+            std::memcpy(buf, rgb.data, size);
+            wxImage wi(rgb.cols, rgb.rows, buf, false);
+            return wxBitmap(wi);
+        };
+        resultCache_ = toWxBitmap2(resized);
+        resultTitle_->SetLabel("Split Preview (" + wxString::Format("%dx%d per panel", panelW, panelH) + ")");
+        LayoutImages();
+        ShowOverlay(wxString::FromUTF8("Preview"), wxColour(100,100,100), 400);
+        return;
+    }
 
     if (mode == ProcessingMode::Crop)
     {
@@ -475,12 +544,29 @@ void WxPreviewPanel::SetCropRect(const wxString& imagePath, const wxRect& rect)
     cropByImage_[imagePath] = rect;
 }
 
+void WxPreviewPanel::FitCurrentCropToMaxHeight()
+{
+    if (!originalMat_ || originalMat_->empty() || cropAspect_ <= 0.0 || currentImagePath_.IsEmpty()) return;
+    int imgW = originalMat_->cols; int imgH = originalMat_->rows;
+    int targetH = imgH;
+    int targetW = int(targetH * cropAspect_ + 0.5);
+    if (targetW > imgW) { targetW = imgW; targetH = int(targetW / cropAspect_ + 0.5); }
+    int x = 0; // default left
+    wxRect cur = cropByImage_[currentImagePath_];
+    // keep current center X if possible
+    int cx = cur.GetX() + cur.GetWidth()/2;
+    x = std::clamp(cx - targetW/2, 0, std::max(0, imgW - targetW));
+    int y = (targetH == imgH) ? 0 : (imgH - targetH)/2;
+    cropByImage_[currentImagePath_] = wxRect(x, y, targetW, targetH);
+}
+
 // ===== CropCanvas implementation =====
 
 wxBEGIN_EVENT_TABLE(CropCanvas, wxPanel)
     EVT_PAINT(CropCanvas::OnPaint)
     EVT_LEFT_DOWN(CropCanvas::OnLeftDown)
     EVT_LEFT_UP(CropCanvas::OnLeftUp)
+    EVT_LEFT_DCLICK(CropCanvas::OnLeftDClick)
     EVT_MOTION(CropCanvas::OnMotion)
     EVT_LEAVE_WINDOW(CropCanvas::OnLeave)
     EVT_SIZE(CropCanvas::OnSize)
@@ -507,7 +593,20 @@ void CropCanvas::EnableOverlay(bool enable)
 
 void CropCanvas::SetCropRectImage(const wxRect& r)
 {
-    cropImg_ = r;
+    // Clamp incoming rect to image bounds to avoid out-of-bounds overlays
+    wxRect clamped = r;
+    int imgW = origImgSize_.GetWidth();
+    int imgH = origImgSize_.GetHeight();
+    if (imgW > 0 && imgH > 0)
+    {
+        if (clamped.width > imgW) clamped.width = imgW;
+        if (clamped.height > imgH) clamped.height = imgH;
+        if (clamped.x < 0) clamped.x = 0;
+        if (clamped.y < 0) clamped.y = 0;
+        if (clamped.x + clamped.width > imgW) clamped.x = imgW - clamped.width;
+        if (clamped.y + clamped.height > imgH) clamped.y = imgH - clamped.height;
+    }
+    cropImg_ = clamped;
     Refresh();
 }
 
@@ -516,6 +615,13 @@ wxRect CropCanvas::GetCropRectImage() const { return cropImg_; }
 void CropCanvas::SetAspectRatio(double aspectWOverH)
 {
     aspect_ = aspectWOverH;
+}
+
+void CropCanvas::SetGuides(int cols, int rows)
+{
+    guideCols_ = std::max(0, cols);
+    guideRows_ = std::max(0, rows);
+    Refresh();
 }
 
 void CropCanvas::OnPaint(wxPaintEvent&)
@@ -545,6 +651,24 @@ void CropCanvas::OnPaint(wxPaintEvent&)
         dc.SetPen(wxPen(wxColour(0, 200, 80), 2));
         dc.DrawRectangle(pr);
 
+        // Draw guidelines (e.g., thirds for splitter)
+        if (guideCols_ > 1 || guideRows_ > 1)
+        {
+            dc.SetPen(wxPen(wxColour(40,220,90), 1, wxPENSTYLE_SOLID));
+            // Vertical guides
+            for (int i = 1; i < guideCols_; ++i)
+            {
+                int x = pr.x + (pr.width * i) / guideCols_;
+                dc.DrawLine(x, pr.y, x, pr.y + pr.height);
+            }
+            // Horizontal guides
+            for (int j = 1; j < guideRows_; ++j)
+            {
+                int y = pr.y + (pr.height * j) / guideRows_;
+                dc.DrawLine(pr.x, y, pr.x + pr.width, y);
+            }
+        }
+
         // Draw handles (larger for easier selection)
         const int hs = 12;
         auto drawHandle = [&](int x, int y){ dc.SetBrush(wxBrush(wxColour(255,255,255))); dc.SetPen(wxPen(wxColour(0,0,0))); dc.DrawRectangle(x - hs/2, y - hs/2, hs, hs); };
@@ -560,10 +684,25 @@ void CropCanvas::OnLeftDown(wxMouseEvent& e)
     if (!overlayEnabled_) return;
     SetFocus();
     if (!HasCapture()) CaptureMouse();
+    // Manual double-click detection fallback
+    wxLongLong now = wxGetLocalTimeMillis();
+    if (lastClickMs_ != 0 && (now - lastClickMs_).ToLong() <= 500) {
+        wxPoint p = e.GetPosition();
+        if (ImageToPanel(cropImg_).Contains(p) && (std::abs(p.x - lastClickPt_.x) <= 12) && (std::abs(p.y - lastClickPt_.y) <= 12)) {
+            // Trigger fit-to-height
+            FitToMaxHeight();
+            lastClickMs_ = 0;
+            e.Skip();
+            return;
+        }
+    }
+    lastClickMs_ = wxGetLocalTimeMillis();
+    lastClickPt_ = e.GetPosition();
     lastMouse_ = e.GetPosition();
     drag_ = HitTest(lastMouse_);
     if (drag_ == None && ImageToPanel(cropImg_).Contains(lastMouse_)) drag_ = Move;
-    e.Skip(false);
+    // Allow default processing so double-click events are generated by wx
+    e.Skip();
 }
 
 void CropCanvas::OnLeftUp(wxMouseEvent&)
@@ -572,6 +711,17 @@ void CropCanvas::OnLeftUp(wxMouseEvent&)
     if (drag_ != None) NotifyCropChanged();
     drag_ = None;
     SetCursor(wxCURSOR_ARROW);
+}
+
+void CropCanvas::OnLeftDClick(wxMouseEvent& e)
+{
+    if (!overlayEnabled_) return;
+    wxPoint p = e.GetPosition();
+    if (!ImageToPanel(cropImg_).Contains(p)) return;
+    if (HasCapture()) ReleaseMouse();
+    drag_ = None;
+    SetCursor(wxCURSOR_ARROW);
+    FitToMaxHeight();
 }
 
 void CropCanvas::OnMotion(wxMouseEvent& e)
@@ -658,11 +808,60 @@ void CropCanvas::OnMotion(wxMouseEvent& e)
             }
         }
         if (r.width < minSize) r.width = minSize; if (r.height < minSize) r.height = minSize;
+        // Ensure the resized rect cannot exceed the image dimensions. If it does, shrink it while
+        // preserving aspect (if any) and anchor relative to the dragged edge/corner similar to above.
+        int imgW = origImgSize_.GetWidth();
+        int imgH = origImgSize_.GetHeight();
+        if (imgW > 0 && imgH > 0 && (r.width > imgW || r.height > imgH))
+        {
+            int w = std::min(r.width, imgW);
+            int h = std::min(r.height, imgH);
+            if (aspect_ > 0.0)
+            {
+                double want = aspect_;
+                // Fit w/h to image while maintaining aspect
+                // Start from the limited side and compute the other from aspect, then recheck
+                if (double(w)/double(h) > want) { w = int(h * want + 0.5); } else { h = int(w / want + 0.5); }
+                if (w > imgW) { w = imgW; h = int(w / want + 0.5); }
+                if (h > imgH) { h = imgH; w = int(h * want + 0.5); }
+                // Re-anchor using the same logic as above
+                switch (drag_)
+                {
+                    case ResizeTL: { int ax = prev.x + prev.width; int ay = prev.y + prev.height; r.width = w; r.height = h; r.x = ax - r.width; r.y = ay - r.height; break; }
+                    case ResizeTR: { int ax = prev.x;               int ay = prev.y + prev.height; r.width = w; r.height = h; r.x = ax;              r.y = ay - r.height; break; }
+                    case ResizeBL: { int ax = prev.x + prev.width; int ay = prev.y;               r.width = w; r.height = h; r.x = ax - r.width; r.y = ay;               break; }
+                    case ResizeBR: { int ax = prev.x;               int ay = prev.y;               r.width = w; r.height = h; r.x = ax;              r.y = ay;               break; }
+                    case ResizeL:  { int ax = prev.x + prev.width; r.width = w; r.x = ax - r.width; int cy = prev.y + prev.height/2; r.height = int(r.width / want + 0.5); r.y = cy - r.height/2; break; }
+                    case ResizeR:  { int ax = prev.x;               r.width = w; r.x = ax;              int cy = prev.y + prev.height/2; r.height = int(r.width / want + 0.5); r.y = cy - r.height/2; break; }
+                    case ResizeT:  { int ay = prev.y + prev.height; r.height = h; r.y = ay - r.height; int cx = prev.x + prev.width/2; r.width  = int(r.height * want + 0.5); r.x = cx - r.width/2; break; }
+                    case ResizeB:  { int ay = prev.y;               r.height = h; r.y = ay;              int cx = prev.x + prev.width/2; r.width  = int(r.height * want + 0.5); r.x = cx - r.width/2; break; }
+                    default: break;
+                }
+            }
+            else
+            {
+                // Free aspect: just cap size but keep the modified edges
+                int dx = r.width  - w;
+                int dy = r.height - h;
+                r.width = w; r.height = h;
+                // If we reduced width/height, adjust position to keep the opposite edge fixed
+                if (dx > 0)
+                {
+                    if (drag_ == ResizeL || drag_ == ResizeTL || drag_ == ResizeBL) r.x += dx;
+                }
+                if (dy > 0)
+                {
+                    if (drag_ == ResizeT || drag_ == ResizeTL || drag_ == ResizeTR) r.y += dy;
+                }
+            }
+        }
     }
-    // Clamp to image bounds
+    // Final clamp to image bounds (position only; size is already limited above)
     if (r.x < 0) r.x = 0; if (r.y < 0) r.y = 0;
-    if (r.x + r.width > origImgSize_.GetWidth()) r.x = origImgSize_.GetWidth() - r.width;
-    if (r.y + r.height > origImgSize_.GetHeight()) r.y = origImgSize_.GetHeight() - r.height;
+    int imgW = origImgSize_.GetWidth();
+    int imgH = origImgSize_.GetHeight();
+    if (imgW > 0 && r.x + r.width > imgW) r.x = imgW - r.width;
+    if (imgH > 0 && r.y + r.height > imgH) r.y = imgH - r.height;
     cropImg_ = r;
     Refresh();
     // Live notify for realtime preview
@@ -758,14 +957,41 @@ void CropCanvas::NotifyCropChanged()
     if (!owner_) return;
     if (!owner_->CurrentImagePath().IsEmpty())
         owner_->SetCropRect(owner_->CurrentImagePath(), cropImg_);
-    // Trigger preview recompute for crop mode
+    // Trigger preview recompute for current mode (Crop or Splitter)
     if (!owner_->CurrentImagePath().IsEmpty())
     {
-        // Use last-known settings by re-invoking UpdatePreview with no change; main frame drives it normally,
-        // but here we can simply call LayoutImages by asking parent to UpdatePreview with same params
-        // Instead, post a size event to force LayoutImages, and rely on caller to update preview on settings change.
-        // For immediate feedback, we rebuild result here by faking a settings struct.
         ImageSettings s; s.width = 0; s.height = 0; s.whiteThreshold = -1; s.padding = 0.0; s.blurRadius = 0;
-        owner_->UpdatePreview(owner_->CurrentImagePath(), s, ProcessingMode::Crop, MaskSettings());
+        owner_->UpdatePreview(owner_->CurrentImagePath(), s, owner_->CurrentMode(), MaskSettings());
     }
+}
+
+void WxPreviewPanel::SetSplitterCount(int n)
+{
+    splitterCount_ = std::max(2, n);
+    if (originalCanvas_ && currentMode_ == ProcessingMode::Splitter)
+    {
+        originalCanvas_->SetGuides(splitterCount_, 1);
+        originalCanvas_->Refresh();
+    }
+}
+
+void CropCanvas::FitToMaxHeight()
+{
+    int imgW = origImgSize_.GetWidth();
+    int imgH = origImgSize_.GetHeight();
+    if (imgW <= 0 || imgH <= 0) return;
+    double ar = aspect_ > 0.0 ? aspect_ : (cropImg_.GetHeight() > 0 ? double(cropImg_.GetWidth())/double(cropImg_.GetHeight()) : 0.0);
+    if (ar <= 0.0) return;
+    int targetH = imgH;
+    int targetW = int(targetH * ar + 0.5);
+    if (targetW > imgW) { targetW = imgW; targetH = int(targetW / ar + 0.5); }
+    // Keep current center X if possible
+    int cx = cropImg_.GetX() + cropImg_.GetWidth()/2;
+    int x = std::clamp(cx - targetW/2, 0, std::max(0, imgW - targetW));
+    int y = (targetH == imgH) ? 0 : (imgH - targetH)/2;
+    x = std::clamp(x, 0, std::max(0, imgW - targetW));
+    y = std::clamp(y, 0, std::max(0, imgH - targetH));
+    cropImg_ = wxRect(x, y, targetW, targetH);
+    Refresh();
+    NotifyCropChanged();
 }

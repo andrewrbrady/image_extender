@@ -24,7 +24,10 @@ public:
     void SetCropAspectRatio(double aspectWOverH); // 0.0 for Free
     bool GetCropRect(const wxString& imagePath, wxRect& out) const;
     void SetCropRect(const wxString& imagePath, const wxRect& rect);
+    void FitCurrentCropToMaxHeight();
     wxString CurrentImagePath() const { return currentImagePath_; }
+    ProcessingMode CurrentMode() const { return currentMode_; }
+    void SetSplitterCount(int n);
 
 private:
     void BuildUI();
@@ -47,6 +50,8 @@ private:
     cv::Mat* resultMat_ {nullptr};
     wxString currentImagePath_;
     wxString lastResultPath_;
+    ProcessingMode currentMode_ { ProcessingMode::ExtendCanvas };
+    int splitterCount_ {3};
 
     // Crop state
     double cropAspect_ {0.0}; // 0 => Free
@@ -65,11 +70,13 @@ public:
     void SetCropRectImage(const wxRect& r); // in image coordinates
     wxRect GetCropRectImage() const;
     void SetAspectRatio(double aspectWOverH); // 0 => Free
+    void SetGuides(int cols, int rows); // 0 => none
 
 protected:
     void OnPaint(wxPaintEvent&);
     void OnLeftDown(wxMouseEvent&);
     void OnLeftUp(wxMouseEvent&);
+    void OnLeftDClick(wxMouseEvent&);
     void OnMotion(wxMouseEvent&);
     void OnLeave(wxMouseEvent&);
     void OnSize(wxSizeEvent&);
@@ -81,6 +88,11 @@ private:
     bool overlayEnabled_ {false};
     double aspect_ {0.0};
     wxRect cropImg_; // image-space
+    int guideCols_ {0};
+    int guideRows_ {0};
+    // Double-click detection fallback
+    wxLongLong lastClickMs_ {0};
+    wxPoint lastClickPt_ {0,0};
 
     enum DragMode { None, Move, ResizeTL, ResizeTR, ResizeBL, ResizeBR, ResizeL, ResizeR, ResizeT, ResizeB };
     DragMode drag_ {None};
@@ -95,6 +107,7 @@ private:
     DragMode HitTest(const wxPoint& p) const; // panel-space
     void ConstrainAspect(wxRect& r) const;
     void NotifyCropChanged();
+    void FitToMaxHeight();
 
     wxDECLARE_EVENT_TABLE();
 };

@@ -46,6 +46,7 @@ void WxControlPanel::BuildUI()
     modeBox_->Append("Extend Canvas");
     modeBox_->Append("Vehicle Mask (SAM2)");
     modeBox_->Append("Crop");
+    modeBox_->Append("Splitter (3-Panel)");
     modeBox_->SetSelection(0);
     modeRow->Add(modeBox_, 1);
     modeBox->Add(modeRow, 0, wxALL | wxEXPAND, 6);
@@ -100,6 +101,14 @@ void WxControlPanel::BuildUI()
     dimsRow->Add(height_, 0, wxRIGHT, 12);
     dimsBox->Add(dimsRow, 0, wxALL, 6);
     root->Add(dimsBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 6);
+
+    // Splitter options (shown only in Splitter mode)
+    auto* splitOpts = new wxBoxSizer(wxHORIZONTAL);
+    splitsLabel_ = new wxStaticText(this, wxID_ANY, "Splits:");
+    splits_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(70,-1), wxSP_ARROW_KEYS, 2, 12, 3);
+    splitOpts->Add(splitsLabel_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    splitOpts->Add(splits_, 0, wxRIGHT, 6);
+    root->Add(splitOpts, 0, wxLEFT | wxRIGHT | wxBOTTOM, 6);
 
     // Section: Processing params
     auto* paramsBox = new wxStaticBoxSizer(wxVERTICAL, this, "Processing Parameters");
@@ -225,6 +234,7 @@ void WxControlPanel::WireEvents()
     whiteThr_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
     padding_->Bind(wxEVT_SPINCTRLDOUBLE, fireSettingsChanged);
     blurRadius_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
+    if (splits_) { splits_->Bind(wxEVT_SPINCTRL, fireSettingsChanged); splits_->Bind(wxEVT_TEXT, fireSettingsChanged); }
     // Also react to direct text edits in spin controls
     width_->Bind(wxEVT_TEXT, fireSettingsChanged);
     height_->Bind(wxEVT_TEXT, fireSettingsChanged);
@@ -255,12 +265,16 @@ void WxControlPanel::WireEvents()
         EnsureDefaultOutputFolder();
         const bool showMask = (getMode() == ProcessingMode::VehicleMask);
         if (maskBox_) maskBox_->ShowItems(showMask);
-        const bool isCrop = (getMode() == ProcessingMode::Crop);
+        const bool isCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter);
         // Hide white threshold and padding in Crop mode
-        if (whiteThrLabel_) whiteThrLabel_->Show(!isCrop);
-        if (whiteThr_) whiteThr_->Show(!isCrop);
-        if (paddingLabel_) paddingLabel_->Show(!isCrop);
-        if (padding_) padding_->Show(!isCrop);
+        if (whiteThrLabel_) whiteThrLabel_->Show(!isCropLike);
+        if (whiteThr_) whiteThr_->Show(!isCropLike);
+        if (paddingLabel_) paddingLabel_->Show(!isCropLike);
+        if (padding_) padding_->Show(!isCropLike);
+        // Show splits control only in Splitter mode
+        const bool showSplits = (getMode() == ProcessingMode::Splitter);
+        if (splitsLabel_) splitsLabel_->Show(showSplits);
+        if (splits_) splits_->Show(showSplits);
         Layout();
         wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED);
         wxPostEvent(this, ev);
@@ -269,11 +283,15 @@ void WxControlPanel::WireEvents()
     // Initial visibility per mode (hide/show all items in the sizer)
     if (maskBox_) maskBox_->ShowItems(getMode() == ProcessingMode::VehicleMask);
     // Initial visibility: hide threshold/padding if starting in Crop (default is Extend)
-    const bool startIsCrop = (getMode() == ProcessingMode::Crop);
-    if (whiteThrLabel_) whiteThrLabel_->Show(!startIsCrop);
-    if (whiteThr_) whiteThr_->Show(!startIsCrop);
-    if (paddingLabel_) paddingLabel_->Show(!startIsCrop);
-    if (padding_) padding_->Show(!startIsCrop);
+    const bool startIsCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter);
+    if (whiteThrLabel_) whiteThrLabel_->Show(!startIsCropLike);
+    if (whiteThr_) whiteThr_->Show(!startIsCropLike);
+    if (paddingLabel_) paddingLabel_->Show(!startIsCropLike);
+    if (padding_) padding_->Show(!startIsCropLike);
+    // Initial visibility for splits
+    const bool startShowSplits = (getMode() == ProcessingMode::Splitter);
+    if (splitsLabel_) splitsLabel_->Show(startShowSplits);
+    if (splits_) splits_->Show(startShowSplits);
 
     processBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_PROCESS_REQUESTED); wxPostEvent(this, ev); });
 
@@ -384,6 +402,7 @@ ProcessingMode WxControlPanel::getMode() const
     int sel = modeBox_ ? modeBox_->GetSelection() : 0;
     if (sel == 1) return ProcessingMode::VehicleMask;
     if (sel == 2) return ProcessingMode::Crop;
+    if (sel == 3) return ProcessingMode::Splitter;
     return ProcessingMode::ExtendCanvas;
 }
 
@@ -408,5 +427,20 @@ double WxControlPanel::getCropAspectRatio() const
     int w = width_ ? width_->GetValue() : 0;
     int h = height_ ? height_->GetValue() : 0;
     if (w <= 0 || h <= 0) return 0.0;
+    // For Splitter mode, crop overlay should match 3 panels side-by-side
+    if (modeBox_ && getMode() == ProcessingMode::Splitter)
+    {
+        int splits = getSplitterCount();
+        if (splits < 2) splits = 2;
+        return (double(splits) * double(w)) / double(h);
+    }
     return double(w) / double(h);
+}
+
+int WxControlPanel::getSplitterCount() const
+{
+    if (!splits_) return 3;
+    int v = splits_->GetValue();
+    if (v < 2) v = 2; if (v > 12) v = 12;
+    return v;
 }

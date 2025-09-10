@@ -7,6 +7,7 @@
 #include "extend_canvas.hpp"
 #include "vehicle_mask.hpp"
 #include <opencv2/opencv.hpp>
+#include <array>
 
 wxBEGIN_EVENT_TABLE(WxMainFrame, wxFrame)
 wxEND_EVENT_TABLE()
@@ -43,6 +44,7 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
             // Push crop aspect before updating preview so overlay is consistent
             preview_->SetCropAspectRatio(controls_->getCropAspectRatio());
+            preview_->SetSplitterCount(controls_->getSplitterCount());
             preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
         }
     });
@@ -58,6 +60,7 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
             imageSettings_[currentImagePath_] = controls_->getCurrentSettings();
         }
         preview_->SetCropAspectRatio(controls_->getCropAspectRatio());
+        preview_->SetSplitterCount(controls_->getSplitterCount());
         preview_->UpdatePreview(currentImagePath_, imageSettings_[currentImagePath_], controls_->getMode(), controls_->getMaskSettings());
     });
 
@@ -146,6 +149,60 @@ WxMainFrame::WxMainFrame(wxWindow* parent)
                     wxString outName = inFn.GetName() + "_crop." + inFn.GetExt();
                     wxString finalPath = wxFileName(outDir, outName).GetFullPath();
                     success = cv::imwrite(std::string(finalPath.mb_str()), cropped);
+                    if (success) ++ok;
+                }
+            }
+            else if (controls_->getMode() == ProcessingMode::Splitter)
+            {
+                // Splitter: use preview's crop rect to split into 3 equal vertical panels
+                int splitsN = std::max(2, controls_->getSplitterCount());
+                wxRect cr;
+                bool haveRect = preview_->GetCropRect(file, cr);
+                double ar = controls_->getCropAspectRatio();
+                cv::Mat img = cv::imread(std::string(file.mb_str()));
+                if (!img.empty())
+                {
+                    if (!haveRect)
+                    {
+                        int W = img.cols, H = img.rows;
+                        int cw = int(W * 0.9 + 0.5), ch = int(H * 0.9 + 0.5);
+                        if (ar > 0.0)
+                        {
+                            if (double(cw)/double(ch) > ar) cw = int(ch * ar + 0.5); else ch = int(cw / ar + 0.5);
+                        }
+                        int cx = (W - cw)/2, cy = (H - ch)/2;
+                        cr = wxRect(cx, cy, cw, ch);
+                    }
+                    cv::Rect roi(cr.x, cr.y, cr.width, cr.height);
+                    roi &= cv::Rect(0,0,img.cols, img.rows);
+                    cv::Mat cropped = img(roi).clone();
+                    // Compute per-panel slice rects in cropped coords
+                    int totalW = cropped.cols;
+                    int baseW = std::max(1, totalW / splitsN);
+                    int rem = totalW - baseW * splitsN;
+                    int rw = std::max(1, s.width * scale);
+                    int rh = std::max(1, s.height * scale);
+                    wxFileName inFn(file);
+                    bool allOk = true;
+                    int x = 0;
+                    for (int i=0;i<splitsN;++i)
+                    {
+                        int w = baseW + ((i == splitsN - 1) ? rem : 0);
+                        cv::Rect r(x, 0, w, cropped.rows);
+                        r &= cv::Rect(0,0,cropped.cols, cropped.rows);
+                        cv::Mat tile = cropped(r).clone();
+                        x += w;
+                        if (s.width > 0 && s.height > 0)
+                        {
+                            cv::Mat resized; cv::resize(tile, resized, cv::Size(rw, rh), 0,0, cv::INTER_LANCZOS4);
+                            tile = resized;
+                        }
+                        wxString outName = inFn.GetName() + wxString::Format("_split_%d.", i+1) + inFn.GetExt();
+                        wxString finalPath = wxFileName(outDir, outName).GetFullPath();
+                        bool okTile = cv::imwrite(std::string(finalPath.mb_str()), tile);
+                        allOk = allOk && okTile;
+                    }
+                    success = allOk;
                     if (success) ++ok;
                 }
             }
