@@ -9,6 +9,7 @@
 wxDEFINE_EVENT(wxEVT_WXUI_SETTINGS_CHANGED, wxCommandEvent);
 wxDEFINE_EVENT(wxEVT_WXUI_PROCESS_REQUESTED, wxCommandEvent);
 wxDEFINE_EVENT(wxEVT_WXUI_BATCH_ITEM_SELECTED, wxCommandEvent);
+wxDEFINE_EVENT(wxEVT_WXUI_DEVELOP_REQUESTED, wxCommandEvent);
 
 static bool IsImagePath(const wxString& p)
 {
@@ -23,7 +24,9 @@ bool WxFileDropTarget::OnDropFiles(wxCoord, wxCoord, const wxArrayString& filena
     for (auto& f : filenames) if (IsImagePath(f)) imgs.Add(f);
     if (!imgs.IsEmpty())
     {
-        owner_->AddFiles(imgs);
+        // Route to batch or textures per target
+        if (target_ == WxFileDropTarget::Target::Batch) owner_->AddFiles(imgs);
+        else owner_->AddTextures(imgs);
         return true;
     }
     return false;
@@ -44,9 +47,11 @@ void WxControlPanel::BuildUI()
     modeRow->Add(new wxStaticText(this, wxID_ANY, "Feature:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
     modeBox_ = new wxComboBox(this, wxID_ANY);
     modeBox_->Append("Extend Canvas");
+    modeBox_->Append("Auto Fit Vehicle");
     modeBox_->Append("Vehicle Mask (SAM2)");
     modeBox_->Append("Crop");
     modeBox_->Append("Splitter (3-Panel)");
+    modeBox_->Append("Split Collage");
     modeBox_->SetSelection(0);
     modeRow->Add(modeBox_, 1);
     modeBox->Add(modeRow, 0, wxALL | wxEXPAND, 6);
@@ -57,7 +62,7 @@ void WxControlPanel::BuildUI()
 
     list_ = new wxListBox(this, wxID_ANY);
     list_->SetMinSize(wxSize(280, 220));
-    list_->SetDropTarget(new WxFileDropTarget(this));
+    list_->SetDropTarget(new WxFileDropTarget(this, WxFileDropTarget::Target::Batch));
     root->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT, 6);
 
     auto* btnRow = new wxBoxSizer(wxHORIZONTAL);
@@ -100,6 +105,10 @@ void WxControlPanel::BuildUI()
     height_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(90, -1), wxSP_ARROW_KEYS, 0, 20000, 1920);
     dimsRow->Add(height_, 0, wxRIGHT, 12);
     dimsBox->Add(dimsRow, 0, wxALL, 6);
+    // Stretch background (Auto Fit Vehicle)
+    stretchIfNeeded_ = new wxCheckBox(this, wxID_ANY, "Stretch background if needed");
+    stretchIfNeeded_->SetValue(false);
+    dimsBox->Add(stretchIfNeeded_, 0, wxLEFT | wxRIGHT | wxBOTTOM, 6);
     root->Add(dimsBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 6);
 
     // Splitter options (shown only in Splitter mode)
@@ -217,7 +226,27 @@ void WxControlPanel::WireEvents()
         batchFiles_.Clear();
         list_->Clear();
         UpdateProcessEnabled();
+        wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev);
     });
+    if (texAddBtn_) {
+        texAddBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){
+            wxFileDialog dlg(this, "Select Textures/Overlays", wxEmptyString, wxEmptyString,
+                             "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.tiff;*.tif)|*.png;*.jpg;*.jpeg;*.bmp;*.tiff;*.tif|All files (*.*)|*.*",
+                             wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
+            if (dlg.ShowModal() == wxID_OK)
+            {
+                wxArrayString paths; dlg.GetPaths(paths);
+                AddTextures(paths);
+            }
+        });
+    }
+    if (texClearBtn_) {
+        texClearBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){
+            textureFiles_.Clear();
+            if (texList_) texList_->Clear();
+            UpdateProcessEnabled();
+        });
+    }
     list_->Bind(wxEVT_LISTBOX, [this](wxCommandEvent& ev){
         int i = ev.GetSelection();
         if (i >= 0 && i < (int)batchFiles_.size())
@@ -226,7 +255,27 @@ void WxControlPanel::WireEvents()
             out.SetString(batchFiles_[i]);
             wxPostEvent(this, out);
         }
+        UpdateProcessEnabled();
     });
+    if (developBtn_) { developBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_DEVELOP_REQUESTED); wxPostEvent(this, ev); }); }
+    if (texList_) {
+        texList_->Bind(wxEVT_LISTBOX, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
+    if (blendBox_) {
+        blendBox_->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
+    if (opacitySlider_) {
+        opacitySlider_->Bind(wxEVT_SLIDER, [this](wxCommandEvent&){ if (opacityLabel_) opacityLabel_->SetLabel(wxString::Format("Opacity: %d%%", opacitySlider_->GetValue())); wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
+    if (useTexLuma_) {
+        useTexLuma_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
+    if (swapRB_) {
+        swapRB_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
+    if (randomizeBtn_) {
+        randomizeBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ RandomizeDevelopParams(); wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); });
+    }
 
     auto fireSettingsChanged = [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED); wxPostEvent(this, ev); };
     width_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
@@ -234,6 +283,7 @@ void WxControlPanel::WireEvents()
     whiteThr_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
     padding_->Bind(wxEVT_SPINCTRLDOUBLE, fireSettingsChanged);
     blurRadius_->Bind(wxEVT_SPINCTRL, fireSettingsChanged);
+    if (stretchIfNeeded_) stretchIfNeeded_->Bind(wxEVT_CHECKBOX, fireSettingsChanged);
     if (splits_) { splits_->Bind(wxEVT_SPINCTRL, fireSettingsChanged); splits_->Bind(wxEVT_TEXT, fireSettingsChanged); }
     // Also react to direct text edits in spin controls
     width_->Bind(wxEVT_TEXT, fireSettingsChanged);
@@ -265,16 +315,34 @@ void WxControlPanel::WireEvents()
         EnsureDefaultOutputFolder();
         const bool showMask = (getMode() == ProcessingMode::VehicleMask);
         if (maskBox_) maskBox_->ShowItems(showMask);
-        const bool isCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter);
-        // Hide white threshold and padding in Crop mode
-        if (whiteThrLabel_) whiteThrLabel_->Show(!isCropLike);
-        if (whiteThr_) whiteThr_->Show(!isCropLike);
-        if (paddingLabel_) paddingLabel_->Show(!isCropLike);
-        if (padding_) padding_->Show(!isCropLike);
+        const bool isCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter || getMode() == ProcessingMode::SplitCollage);
+        const bool isFilm = (getMode() == ProcessingMode::FilmDevelop);
+        const bool isAutoFit = (getMode() == ProcessingMode::AutoFitVehicle);
+        // White threshold applies only to Extend Canvas mode
+        const bool showWhiteThr = (getMode() == ProcessingMode::ExtendCanvas);
+        if (whiteThrLabel_) whiteThrLabel_->Show(showWhiteThr);
+        if (whiteThr_) whiteThr_->Show(showWhiteThr);
+        // Padding applies to Extend Canvas and Auto Fit
+        const bool showPadding = (!isCropLike && !isFilm);
+        if (paddingLabel_) paddingLabel_->Show(showPadding);
+        if (padding_) padding_->Show(showPadding);
+        if (stretchIfNeeded_) stretchIfNeeded_->Show(isAutoFit);
         // Show splits control only in Splitter mode
-        const bool showSplits = (getMode() == ProcessingMode::Splitter);
+        const bool showSplits = (getMode() == ProcessingMode::Splitter || getMode() == ProcessingMode::SplitCollage);
         if (splitsLabel_) splitsLabel_->Show(showSplits);
         if (splits_) splits_->Show(showSplits);
+        // Film develop UI visibility
+        if (texList_) texList_->Show(isFilm);
+        if (texAddBtn_) texAddBtn_->Show(isFilm);
+        if (texClearBtn_) texClearBtn_->Show(isFilm);
+        if (developBtn_) developBtn_->Show(isFilm);
+        if (blendBox_) blendBox_->Show(isFilm);
+        if (opacitySlider_) opacitySlider_->Show(isFilm);
+        if (opacityLabel_) opacityLabel_->Show(isFilm);
+        if (randomizeBtn_) randomizeBtn_->Show(isFilm);
+        if (randomOnDevelop_) randomOnDevelop_->Show(isFilm);
+        if (useTexLuma_) useTexLuma_->Show(isFilm);
+        if (swapRB_) swapRB_->Show(isFilm);
         Layout();
         wxCommandEvent ev(wxEVT_WXUI_SETTINGS_CHANGED);
         wxPostEvent(this, ev);
@@ -283,15 +351,32 @@ void WxControlPanel::WireEvents()
     // Initial visibility per mode (hide/show all items in the sizer)
     if (maskBox_) maskBox_->ShowItems(getMode() == ProcessingMode::VehicleMask);
     // Initial visibility: hide threshold/padding if starting in Crop (default is Extend)
-    const bool startIsCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter);
-    if (whiteThrLabel_) whiteThrLabel_->Show(!startIsCropLike);
-    if (whiteThr_) whiteThr_->Show(!startIsCropLike);
-    if (paddingLabel_) paddingLabel_->Show(!startIsCropLike);
-    if (padding_) padding_->Show(!startIsCropLike);
+    const bool startIsCropLike = (getMode() == ProcessingMode::Crop || getMode() == ProcessingMode::Splitter || getMode() == ProcessingMode::SplitCollage);
+    const bool startIsFilm = (getMode() == ProcessingMode::FilmDevelop);
+    const bool startIsAutoFit = (getMode() == ProcessingMode::AutoFitVehicle);
+    const bool startShowWhiteThr = (getMode() == ProcessingMode::ExtendCanvas);
+    if (whiteThrLabel_) whiteThrLabel_->Show(startShowWhiteThr);
+    if (whiteThr_) whiteThr_->Show(startShowWhiteThr);
+    const bool startShowPadding = (!startIsCropLike && !startIsFilm);
+    if (paddingLabel_) paddingLabel_->Show(startShowPadding);
+    if (padding_) padding_->Show(startShowPadding);
+    if (stretchIfNeeded_) stretchIfNeeded_->Show(startIsAutoFit);
     // Initial visibility for splits
-    const bool startShowSplits = (getMode() == ProcessingMode::Splitter);
+    const bool startShowSplits = (getMode() == ProcessingMode::Splitter || getMode() == ProcessingMode::SplitCollage);
     if (splitsLabel_) splitsLabel_->Show(startShowSplits);
     if (splits_) splits_->Show(startShowSplits);
+    // Film section
+    if (texList_) texList_->Show(startIsFilm);
+    if (texAddBtn_) texAddBtn_->Show(startIsFilm);
+    if (texClearBtn_) texClearBtn_->Show(startIsFilm);
+    if (developBtn_) developBtn_->Show(startIsFilm);
+    if (blendBox_) blendBox_->Show(startIsFilm);
+    if (opacitySlider_) opacitySlider_->Show(startIsFilm);
+    if (opacityLabel_) opacityLabel_->Show(startIsFilm);
+    if (randomizeBtn_) randomizeBtn_->Show(startIsFilm);
+    if (randomOnDevelop_) randomOnDevelop_->Show(startIsFilm);
+    if (useTexLuma_) useTexLuma_->Show(startIsFilm);
+    if (swapRB_) swapRB_->Show(startIsFilm);
 
     processBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&){ wxCommandEvent ev(wxEVT_WXUI_PROCESS_REQUESTED); wxPostEvent(this, ev); });
 
@@ -324,9 +409,28 @@ void WxControlPanel::AddFiles(const wxArrayString& paths)
     }
 }
 
+void WxControlPanel::AddTextures(const wxArrayString& paths)
+{
+    size_t added = 0;
+    for (auto& p : paths)
+    {
+        if (!IsImagePath(p)) continue;
+        if (textureFiles_.Index(p) != wxNOT_FOUND) continue;
+        textureFiles_.Add(p);
+        if (texList_) texList_->Append(wxFileName(p).GetFullName());
+        ++added;
+    }
+    if (added > 0)
+    {
+        UpdateProcessEnabled();
+    }
+}
+
 void WxControlPanel::UpdateProcessEnabled()
 {
     processBtn_->Enable(!batchFiles_.IsEmpty());
+    if (developBtn_) developBtn_->Enable(!batchFiles_.IsEmpty() && !textureFiles_.IsEmpty());
+    if (randomizeBtn_) randomizeBtn_->Enable(!textureFiles_.IsEmpty());
 }
 
 void WxControlPanel::EnsureDefaultOutputFolder()
@@ -361,6 +465,7 @@ ImageSettings WxControlPanel::getCurrentSettings() const
     s.blurRadius = blurRadius_->GetValue();
     s.finalWidth = -1; // optional; can be added to UI if needed
     s.finalHeight = -1;
+    s.stretchIfNeeded = stretchIfNeeded_ ? stretchIfNeeded_->GetValue() : false;
     return s;
 }
 
@@ -371,6 +476,7 @@ void WxControlPanel::loadSettings(const ImageSettings& settings)
     whiteThr_->SetValue(settings.whiteThreshold);
     padding_->SetValue(settings.padding);
     blurRadius_->SetValue(settings.blurRadius);
+    if (stretchIfNeeded_) stretchIfNeeded_->SetValue(settings.stretchIfNeeded);
 }
 
 int WxControlPanel::getScaleFactor() const
@@ -397,12 +503,77 @@ wxArrayString WxControlPanel::getBatchFiles() const
     return batchFiles_;
 }
 
+wxArrayString WxControlPanel::getTextureFiles() const
+{
+    return textureFiles_;
+}
+
+wxString WxControlPanel::getSelectedTexturePath() const
+{
+    if (textureFiles_.IsEmpty()) return wxString();
+    int sel = texList_ ? texList_->GetSelection() : wxNOT_FOUND;
+    if (sel == wxNOT_FOUND || sel < 0 || sel >= (int)textureFiles_.size()) return textureFiles_[0];
+    return textureFiles_[sel];
+}
+
+int WxControlPanel::getDevelopBlendMode() const
+{
+    if (!blendBox_) return 1; // default screen
+    int s = blendBox_->GetSelection();
+    if (s < 0) s = 1; // screen
+    return s; // 0=multiply,1=screen,2=lighten
+}
+
+float WxControlPanel::getDevelopOpacity() const
+{
+    if (!opacitySlider_) return 0.5f;
+    int v = opacitySlider_->GetValue();
+    v = std::clamp(v, 0, 100);
+    return float(v) / 100.0f;
+}
+
+bool WxControlPanel::getRandomizeOnDevelop() const
+{
+    return randomOnDevelop_ ? randomOnDevelop_->GetValue() : true;
+}
+
+void WxControlPanel::RandomizeDevelopParams()
+{
+    // Pick random texture, mode, opacity and set UI state accordingly
+    if (!textureFiles_.IsEmpty() && texList_) {
+        int count = (int)textureFiles_.size();
+        int idx = rand() % count;
+        texList_->SetSelection(idx);
+    }
+    if (blendBox_) {
+        int idx = rand() % 3; // 0..2
+        blendBox_->SetSelection(idx);
+    }
+    if (opacitySlider_) {
+        int val = 30 + (rand() % 51); // 30..80
+        opacitySlider_->SetValue(val);
+        if (opacityLabel_) opacityLabel_->SetLabel(wxString::Format("Opacity: %d%%", val));
+    }
+}
+
+bool WxControlPanel::getUseTextureLuminance() const
+{
+    return useTexLuma_ ? useTexLuma_->GetValue() : true;
+}
+
+bool WxControlPanel::getSwapRB() const
+{
+    return swapRB_ ? swapRB_->GetValue() : false;
+}
+
 ProcessingMode WxControlPanel::getMode() const
 {
     int sel = modeBox_ ? modeBox_->GetSelection() : 0;
-    if (sel == 1) return ProcessingMode::VehicleMask;
-    if (sel == 2) return ProcessingMode::Crop;
-    if (sel == 3) return ProcessingMode::Splitter;
+    if (sel == 1) return ProcessingMode::AutoFitVehicle;
+    if (sel == 2) return ProcessingMode::VehicleMask;
+    if (sel == 3) return ProcessingMode::Crop;
+    if (sel == 4) return ProcessingMode::Splitter;
+    if (sel == 5) return ProcessingMode::SplitCollage;
     return ProcessingMode::ExtendCanvas;
 }
 
@@ -428,7 +599,7 @@ double WxControlPanel::getCropAspectRatio() const
     int h = height_ ? height_->GetValue() : 0;
     if (w <= 0 || h <= 0) return 0.0;
     // For Splitter mode, crop overlay should match 3 panels side-by-side
-    if (modeBox_ && getMode() == ProcessingMode::Splitter)
+    if (modeBox_ && (getMode() == ProcessingMode::Splitter || getMode() == ProcessingMode::SplitCollage))
     {
         int splits = getSplitterCount();
         if (splits < 2) splits = 2;

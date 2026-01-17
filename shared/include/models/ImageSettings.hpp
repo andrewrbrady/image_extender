@@ -13,6 +13,7 @@ struct ImageSettings
     int finalWidth {-1};
     int finalHeight {-1};
     int blurRadius {0};
+    bool stretchIfNeeded {false};
 
     ImageSettings() = default;
     ImageSettings(int w, int h) : width(w), height(h) {}

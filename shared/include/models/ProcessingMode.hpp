@@ -8,7 +8,10 @@
 enum class ProcessingMode
 {
     ExtendCanvas = 0,
+    AutoFitVehicle = 5,
     VehicleMask = 1,
     Crop = 2,
     Splitter = 3,
+    SplitCollage = 6,
+    FilmDevelop = 4,
 };

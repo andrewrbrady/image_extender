@@ -6,6 +6,7 @@
 #include <wx/stattext.h>
 #include <wx/gauge.h>
 #include <wx/filepicker.h>
+#include <wx/slider.h>
 #include <vector>
 #include <map>
 #include <wx/dnd.h>
@@ -18,6 +19,7 @@
 wxDECLARE_EVENT(wxEVT_WXUI_SETTINGS_CHANGED, wxCommandEvent);
 wxDECLARE_EVENT(wxEVT_WXUI_PROCESS_REQUESTED, wxCommandEvent);
 wxDECLARE_EVENT(wxEVT_WXUI_BATCH_ITEM_SELECTED, wxCommandEvent);
+wxDECLARE_EVENT(wxEVT_WXUI_DEVELOP_REQUESTED, wxCommandEvent);
 
 class WxFileDropTarget;
 
@@ -32,6 +34,14 @@ public:
     int getScaleFactor() const; // 1, 2, 4
     wxString getOutputFolder() const;
     wxArrayString getBatchFiles() const;
+    wxArrayString getTextureFiles() const;
+    wxString getSelectedTexturePath() const;
+    int getDevelopBlendMode() const; // 0=multiply,1=screen,2=lighten
+    float getDevelopOpacity() const; // 0..1
+    bool getRandomizeOnDevelop() const;
+    void RandomizeDevelopParams();
+    bool getUseTextureLuminance() const; // if true, convert texture to grayscale
+    bool getSwapRB() const; // debug: swap R/B channels in texture
     ProcessingMode getMode() const;
     MaskSettings getMaskSettings() const;
     int getSplitterCount() const;
@@ -40,6 +50,7 @@ private:
     void BuildUI();
     void WireEvents();
     void AddFiles(const wxArrayString& paths);
+    void AddTextures(const wxArrayString& paths);
     void UpdateProcessEnabled();
     void EnsureDefaultOutputFolder();
 
@@ -48,6 +59,19 @@ private:
     wxButton* addBtn_ {nullptr};
     wxButton* clearBtn_ {nullptr};
     wxGauge* progress_ {nullptr};
+
+    // Film develop UI
+    wxListBox* texList_ {nullptr};
+    wxButton* texAddBtn_ {nullptr};
+    wxButton* texClearBtn_ {nullptr};
+    wxButton* developBtn_ {nullptr};
+    wxComboBox* blendBox_ {nullptr};
+    wxSlider* opacitySlider_ {nullptr};
+    wxStaticText* opacityLabel_ {nullptr};
+    wxButton* randomizeBtn_ {nullptr};
+    wxCheckBox* randomOnDevelop_ {nullptr};
+    wxCheckBox* useTexLuma_ {nullptr};
+    wxCheckBox* swapRB_ {nullptr};
 
     wxSpinCtrl* width_ {nullptr};
     wxSpinCtrl* height_ {nullptr};
@@ -62,6 +86,7 @@ private:
     wxComboBox* modeBox_ {nullptr};
     wxStaticText* splitsLabel_ {nullptr};
     wxSpinCtrl* splits_ {nullptr};
+    wxCheckBox* stretchIfNeeded_ {nullptr};
 
     // Masking controls (shown in Vehicle Mask mode)
     wxStaticBoxSizer* maskBox_ {nullptr};
@@ -81,6 +106,7 @@ private:
 
     // Data: keep full paths separate from displayed basenames
     wxArrayString batchFiles_;
+    wxArrayString textureFiles_;
     std::map<wxString, ImageSettings> perImageSettings_;
 
     friend class WxFileDropTarget;
@@ -94,8 +120,10 @@ public:
 class WxFileDropTarget : public wxFileDropTarget
 {
 public:
-    explicit WxFileDropTarget(WxControlPanel* owner) : owner_(owner) {}
+    enum class Target { Batch, Textures };
+    explicit WxFileDropTarget(WxControlPanel* owner, Target t) : owner_(owner), target_(t) {}
     bool OnDropFiles(wxCoord, wxCoord, const wxArrayString& filenames) override;
 private:
     WxControlPanel* owner_;
+    Target target_ {Target::Batch};
 };

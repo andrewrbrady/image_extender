@@ -3,10 +3,13 @@
 #include <wx/scrolwin.h>
 #include <wx/statbmp.h>
 #include <wx/timer.h>
+#include <wx/geometry.h>
 #include "models/ImageSettings.hpp"
 #include "models/ProcessingMode.hpp"
 #include "models/MaskSettings.hpp"
+#include <memory>
 #include <map>
+#include <vector>
 
 namespace cv { class Mat; }
 
@@ -18,6 +21,12 @@ public:
     void UpdatePreview(const wxString& imagePath, const ImageSettings& settings,
                        ProcessingMode mode = ProcessingMode::ExtendCanvas,
                        const MaskSettings mask = MaskSettings());
+    void UpdatePreviewDevelop(const wxString& imagePath,
+                              const wxString& texturePath,
+                              int blendMode,
+                              float opacity,
+                              bool useTextureLuminance,
+                              bool swapRBTexture);
     void ClearPreview();
     void SetStatus(const wxString& message, bool isError = false);
     // Crop helpers
@@ -28,6 +37,19 @@ public:
     wxString CurrentImagePath() const { return currentImagePath_; }
     ProcessingMode CurrentMode() const { return currentMode_; }
     void SetSplitterCount(int n);
+    void SetCollageSources(const wxArrayString& files);
+    int GetCollageSlotCount() const;
+    bool RenderCollage(cv::Mat& out, int scaleFactor = 1);
+
+    // Collage interactions (used by canvas)
+    void SetCollageActiveSlot(int slot);
+    int GetCollageActiveSlot() const { return collageActiveSlot_; }
+    std::vector<wxRect> GetCollageSlotRectsImage() const;
+    int CollageSlotIndexAtPoint(const wxPoint& imagePt) const;
+    void MoveActiveCollageSlot(const wxPoint2DDouble& deltaImage);
+    void ScaleActiveCollageSlot(double factor, const wxPoint2DDouble& anchorImage);
+    void CycleActiveCollageSlot(int direction);
+    void ChangeActiveCollageSlot(int delta);
 
 private:
     void BuildUI();
@@ -57,6 +79,29 @@ private:
     double cropAspect_ {0.0}; // 0 => Free
     std::map<wxString, wxRect> cropByImage_;
 
+    struct CollageSlotState
+    {
+        int sourceIndex {-1};
+        wxString imagePath;
+        double scale {1.0};
+        double offsetX {0.0};
+        double offsetY {0.0};
+    };
+
+    wxArrayString collageSources_;
+    std::vector<CollageSlotState> collageSlots_;
+    int collageActiveSlot_ {-1};
+    wxSize collageCanvasSize_ {1080, 1920};
+    mutable std::map<wxString, std::shared_ptr<cv::Mat>> collageImageCache_;
+
+    void EnsureCollageSlotCount(int count);
+    void EnsureCollageAssignments();
+    void RebuildCollageComposite();
+    std::shared_ptr<cv::Mat> LoadCollageImage(const wxString& path) const;
+    void ClampCollageSlot(CollageSlotState& slot, const wxRect& slotRect, const cv::Mat& img, double actualScale);
+    void RefreshCollageViews();
+    int CollageSlotFromPoint(const wxPoint& imgPt) const;
+
     wxDECLARE_EVENT_TABLE();
 };
 
@@ -67,6 +112,7 @@ public:
     explicit CropCanvas(WxPreviewPanel* owner);
     void SetImage(const wxBitmap& bmp, const wxSize& origPixelSize);
     void EnableOverlay(bool enable);
+    void SetCollageMode(bool enable);
     void SetCropRectImage(const wxRect& r); // in image coordinates
     wxRect GetCropRectImage() const;
     void SetAspectRatio(double aspectWOverH); // 0 => Free
@@ -80,12 +126,17 @@ protected:
     void OnMotion(wxMouseEvent&);
     void OnLeave(wxMouseEvent&);
     void OnSize(wxSizeEvent&);
+    void OnMouseWheel(wxMouseEvent&);
+    void OnKeyDown(wxKeyEvent&);
 
 private:
     WxPreviewPanel* owner_ {nullptr};
     wxBitmap bmp_;
     wxSize origImgSize_ {0,0}; // full-res image size
     bool overlayEnabled_ {false};
+    bool collageMode_ {false};
+    bool collageDragging_ {false};
+    wxPoint2DDouble collageLastImg_ {0.0, 0.0};
     double aspect_ {0.0};
     wxRect cropImg_; // image-space
     int guideCols_ {0};
@@ -102,6 +153,7 @@ private:
     wxRect ImageToPanel(const wxRect& r) const;
     wxRect PanelToImage(const wxRect& r) const;
     wxPoint PanelToImage(const wxPoint& p) const;
+    wxPoint2DDouble PanelToImageD(const wxPoint& p) const;
     double ScaleFactor() const; // panel pixels per image pixel (uniform)
     wxPoint ImageOriginOnPanel() const; // top-left of image in panel
     DragMode HitTest(const wxPoint& p) const; // panel-space
